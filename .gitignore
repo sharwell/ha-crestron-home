@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+*.log
+.pytest_cache/
+.mypy_cache/
+
+# Editors/OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Home Assistant dev folders (if present)
+.storage/
+.homeassistant/

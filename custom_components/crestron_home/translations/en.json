@@ -1,0 +1,22 @@
+{
+  "title": "Crestron Home",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Crestron Home",
+        "description": "Enter connection details. (Validation and I/O arrive in later milestones.)",
+        "data": {
+          "host": "Host / IP",
+          "api_token": "Web API Token",
+          "verify_ssl": "Verify SSL certificates"
+        }
+      }
+    },
+    "error": {
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This controller is already configured"
+    }
+  }
+}

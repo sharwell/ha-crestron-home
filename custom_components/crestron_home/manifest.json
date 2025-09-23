@@ -1,0 +1,9 @@
+{
+  "domain": "crestron_home",
+  "name": "Crestron Home",
+  "version": "0.1.0",
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "requirements": ["httpx>=0.27.0"],
+  "codeowners": ["@your-github-handle"]
+}

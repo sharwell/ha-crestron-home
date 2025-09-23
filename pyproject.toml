@@ -1,0 +1,12 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = ["E", "F", "W", "I", "UP", "N", "B"]
+ignore = ["E501"]  # line length handled by Black
+
+[tool.ruff.per-file-ignores]
+"custom_components/crestron_home/__init__.py" = ["F401"]
