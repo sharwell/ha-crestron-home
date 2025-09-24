@@ -156,6 +156,8 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
 
         now = utcnow()
         shades: dict[str, Shade] = {}
+        previous_data: dict[str, Shade] = self.data or {}
+        position_changed = False
 
         if not isinstance(payload, list):
             raise UpdateFailed("Shades payload was not a list")
@@ -195,7 +197,14 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
 
             shades[shade.id] = shade
 
+            if not position_changed:
+                previous = previous_data.get(shade.id)
+                if previous is not None and previous.position != shade.position:
+                    position_changed = True
+
         self._last_payload = payload
+        if position_changed:
+            self.boost()
         self._refresh_polling_interval()
         return shades
 
