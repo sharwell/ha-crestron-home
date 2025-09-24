@@ -32,16 +32,59 @@
   },
   "options": {
     "step": {
-      "options": {
+      "init": {
         "title": "Crestron Home options",
-        "description": "Adjust global settings for Crestron Home shades.",
+        "menu_options": {
+          "global_defaults": "Global defaults",
+          "select_shade": "Calibrate a shade",
+          "finish": "Save changes"
+        }
+      },
+      "global_defaults": {
+        "title": "Global defaults",
+        "description": "Configure defaults applied to every shade unless overridden.",
         "data": {
           "invert": "Invert shade position"
         },
         "data_description": {
-          "invert": "Enable when the Crestron position reports 0% as fully open but Home Assistant expects 0% as fully closed."
-        }
+          "invert": "Enable when the Crestron controller reports 0% as fully open but Home Assistant expects 0% as fully closed."
+        },
+        "submit": "Save"
+      },
+      "select_shade": {
+        "title": "Select a shade",
+        "description": "Choose the shade whose calibration curve you want to edit.",
+        "data": {
+          "shade": "Shade"
+        },
+        "submit": "Continue"
+      },
+      "edit_shade": {
+        "title": "Calibration for {shade_name}",
+        "description": "Adjust anchors so the shade reports consistent visual positions. The first anchor must remain at 0% and the last at 100%.",
+        "data": {
+          "invert_axis": "Invert axis",
+          "action": "Action",
+          "insert_after": "Insert anchor between",
+          "remove_index": "Remove anchor"
+        },
+        "data_description": {
+          "invert_axis": "Choose whether this shade should flip the visual axis relative to the global default.",
+          "action": "Save changes or add/remove anchors before saving.",
+          "insert_after": "Pick where the new anchor should be inserted when adding.",
+          "remove_index": "Select which anchor to remove. The first and last anchors cannot be removed."
+        },
+        "submit": "Apply"
       }
+    },
+    "error": {
+      "select_shade": "Select a shade to continue.",
+      "anchors_too_few": "Provide at least two anchors (0% and 100%).",
+      "anchors_endpoint": "The first anchor must start at 0% and the last must end at 100%.",
+      "anchors_pc_range": "Percent values must stay between 0 and 100 and increase for each anchor.",
+      "anchors_raw_range": "Raw position values must stay between 0 and 65535.",
+      "anchors_pc_order": "Anchor percentages must increase for each entry.",
+      "anchors_raw_monotonic": "Raw values must never decrease between anchors."
     }
   },
   "exceptions": {

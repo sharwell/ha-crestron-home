@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from typing import Any, cast
 
@@ -20,17 +21,17 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .calibration import CalibrationCollection, pct_to_raw, raw_to_pct
 from .const import (
-    CONF_INVERT,
+    DATA_CALIBRATIONS,
     DATA_WRITE_BATCHER,
     DATA_SHADES_COORDINATOR,
-    DEFAULT_INVERT,
     DOMAIN,
-    pct_to_raw,
-    raw_to_pct,
 )
 from .coordinator import Shade, ShadesCoordinator
 from .write import ShadeWriteBatcher
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -79,6 +80,20 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         self._write_batcher = cast(
             ShadeWriteBatcher,
             coordinator.hass.data[DOMAIN][entry.entry_id][DATA_WRITE_BATCHER],
+        )
+        calibration_collection = cast(
+            CalibrationCollection,
+            coordinator.hass.data[DOMAIN][entry.entry_id][DATA_CALIBRATIONS],
+        )
+        self._shade_calibration = calibration_collection.for_shade(shade_id)
+        self._invert_axis = self._shade_calibration.resolved_invert(
+            calibration_collection.global_invert
+        )
+        _LOGGER.debug(
+            "Shade %s applying calibration with %d anchors (invert=%s)",
+            shade_id,
+            len(self._shade_calibration.anchors),
+            self._invert_axis,
         )
 
     @staticmethod
@@ -129,8 +144,8 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         shade = self.shade
         if shade is None:
             return None
-        invert = self.config_entry.options.get(CONF_INVERT, DEFAULT_INVERT)
-        return raw_to_pct(shade.position, invert)
+        position = raw_to_pct(shade.position, self._shade_calibration.anchors, self._invert_axis)
+        return position
 
     @property
     def is_closed(self) -> bool | None:
@@ -186,6 +201,5 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         ).result()
 
     async def _async_enqueue_position(self, percentage: int) -> None:
-        invert = self.config_entry.options.get(CONF_INVERT, DEFAULT_INVERT)
-        raw = pct_to_raw(percentage, invert)
+        raw = pct_to_raw(percentage, self._shade_calibration.anchors, self._invert_axis)
         await self._write_batcher.enqueue(self._shade_id, raw)
