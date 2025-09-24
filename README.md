@@ -28,6 +28,22 @@ Assistant cover entities.
 - Availability is derived from the controller's `connectionStatus` value. Offline shades appear as
   unavailable in Home Assistant until the controller reports them as connected again.
 
+### Shade control (Milestone 3)
+
+- Shade entities now implement Home Assistant's `open_cover`, `close_cover`, and
+  `set_cover_position` services. Requests apply the global invert option and scale between
+  Home Assistant's 0–100% representation and Crestron's 0–65535 range.
+- Commands enqueue into a per-controller batcher. Calls landing within an 80 ms window coalesce
+  into one `POST /cws/api/shades/SetState` request (up to 16 shades per batch) so grouped scenes
+  lift together. Duplicate writes for the same shade keep the latest position before the batch is
+  sent.
+- After any successful write (full or partial), the coordinator bumps into fast polling (≈10 s at
+  1–2 s intervals) so Home Assistant state converges quickly with the controller's telemetry.
+- To verify batching manually, enable debug logging (see `sample_config/configuration.yaml` in the
+  repo) and trigger a scene that adjusts eight shades at once. A single DEBUG line similar to
+  `POST /shades/SetState items=8 ids=[...] status=success` confirms one request served the entire
+  batch.
+
 ## Development setup
 
 1. Clone [home-assistant/core](https://github.com/home-assistant/core) next to this repository:

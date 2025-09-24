@@ -215,3 +215,8 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         target = self._fast_interval if self._boost_until else self._idle_interval
         if self.update_interval != target:
             self.update_interval = target
+
+    def bump_fast_poll(self, seconds: float = SHADE_BOOST_SECONDS) -> None:
+        """Public helper to temporarily poll faster after a write."""
+
+        self.boost(seconds)

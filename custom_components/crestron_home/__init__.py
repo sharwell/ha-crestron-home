@@ -13,10 +13,12 @@ from .const import (
     CONF_API_TOKEN,
     DATA_API_CLIENT,
     DATA_SHADES_COORDINATOR,
+    DATA_WRITE_BATCHER,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
 )
 from .coordinator import ShadesCoordinator
+from .write import ShadeWriteBatcher
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,9 +40,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = ShadesCoordinator(hass, client, entry)
     await coordinator.async_config_entry_first_refresh()
 
+    batcher = ShadeWriteBatcher(
+        hass,
+        client,
+        on_success=lambda: coordinator.bump_fast_poll(),
+    )
+
     hass.data[DOMAIN][entry.entry_id] = {
         DATA_API_CLIENT: client,
         DATA_SHADES_COORDINATOR: coordinator,
+        DATA_WRITE_BATCHER: batcher,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -64,6 +73,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
 
     stored = domain_data.pop(entry.entry_id, {})
+    batcher: ShadeWriteBatcher | None = stored.get(DATA_WRITE_BATCHER)
+    if batcher is not None:
+        await batcher.async_shutdown()
+
     client: ApiClient | None = stored.get(DATA_API_CLIENT)
     if client is not None:
         await client.async_logout()

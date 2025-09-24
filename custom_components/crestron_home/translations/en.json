@@ -43,5 +43,16 @@
         }
       }
     }
+  },
+  "exceptions": {
+    "error_write_failed": {
+      "message": "Failed to send commands to the controller."
+    },
+    "error_partial_write": {
+      "message": "Shade command failed for {shade_id}: {reason}"
+    },
+    "error_write_disabled": {
+      "message": "Shade control is shutting down."
+    }
   }
 }
