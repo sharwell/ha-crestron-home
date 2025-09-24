@@ -1,0 +1,6 @@
+{
+  "name": "Crestron Home",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["crestron_home"]
+}
