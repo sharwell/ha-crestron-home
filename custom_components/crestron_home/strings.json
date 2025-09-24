@@ -1,0 +1,8 @@
+{
+  "title": "Crestron Home",
+  "config": {
+    "abort": {
+      "not_implemented": "Crestron Home setup is not available yet."
+    }
+  }
+}
