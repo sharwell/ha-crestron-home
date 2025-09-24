@@ -4,8 +4,13 @@ on:
   push:
     branches:
       - main
-      - m0-scaffold
+      - "rel/*"
+      - "val/*"
   pull_request:
+    branches:
+      - main
+      - "rel/*"
+      - "val/*"
 
 jobs:
   hassfest:
