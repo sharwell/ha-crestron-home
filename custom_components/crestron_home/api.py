@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout, ContentTypeError
@@ -20,6 +21,7 @@ from .const import (
     PATH_LOGIN,
     PATH_ROOMS,
     PATH_SHADES,
+    PATH_SHADES_SET_STATE,
     REQUEST_TIMEOUT,
 )
 
@@ -39,6 +41,26 @@ class InvalidAuthError(CrestronHomeApiError):
 
 class CannotConnectError(CrestronHomeApiError):
     """Raised when the controller cannot be reached."""
+
+
+class ShadeCommandFailedError(CrestronHomeApiError):
+    """Raised when a SetState command fails for all shades."""
+
+
+@dataclass(slots=True)
+class ShadeCommandResult:
+    """Result for a single shade command."""
+
+    status: str
+    message: str | None = None
+
+
+@dataclass(slots=True)
+class ShadeCommandResponse:
+    """Structured response from the SetState endpoint."""
+
+    status: str
+    results: dict[str, ShadeCommandResult]
 
 
 class ApiClient:
@@ -206,6 +228,130 @@ class ApiClient:
             return data
 
         raise CrestronHomeApiError("Shade response was not an object")
+
+    async def async_set_shade_positions(
+        self, items: list[dict[str, int]], *, retry: bool = True
+    ) -> ShadeCommandResponse:
+        """Send a batch of shade position updates to the controller."""
+
+        if not items:
+            return ShadeCommandResponse(status="success", results={})
+
+        await self.async_login()
+
+        session = self._ensure_session()
+        url = self._build_url(PATH_SHADES_SET_STATE)
+        headers = {
+            HEADER_ACCEPT: MIME_TYPE_JSON,
+            HEADER_AUTH_KEY: self._auth_key or "",
+            "Content-Type": MIME_TYPE_JSON,
+        }
+
+        try:
+            async with session.post(
+                url,
+                headers=headers,
+                json=items,
+                timeout=self._timeout,
+            ) as response:
+                if response.status in (HTTP_UNAUTHORIZED, HTTP_NETWORK_AUTH_REQUIRED):
+                    if retry:
+                        _LOGGER.debug(
+                            "Auth key expired during SetState, retrying after reauthentication"
+                        )
+                        await self.async_login(force=True)
+                        return await self.async_set_shade_positions(items, retry=False)
+                    raise InvalidAuthError("Authentication failed after retry")
+
+                response.raise_for_status()
+
+                try:
+                    data = await response.json()
+                except ContentTypeError as err:
+                    raise CrestronHomeApiError(
+                        "Controller response was not JSON"
+                    ) from err
+        except InvalidAuthError:
+            raise
+        except ClientResponseError as err:
+            raise CrestronHomeApiError("Unexpected response from controller") from err
+        except (ClientError, asyncio.TimeoutError) as err:
+            raise CannotConnectError("Error communicating with controller") from err
+
+        parsed = self._parse_set_state_response(data)
+        if parsed.status == "failure":
+            raise ShadeCommandFailedError("Controller rejected the shade command")
+
+        self._last_used = time.monotonic()
+        return parsed
+
+    def _parse_set_state_response(self, data: Any) -> ShadeCommandResponse:
+        if not isinstance(data, dict):
+            raise CrestronHomeApiError("SetState response was not an object")
+
+        status_raw = data.get("status")
+        status = self._normalize_status(status_raw)
+        if status is None:
+            raise CrestronHomeApiError("SetState response did not include a status")
+
+        results: dict[str, ShadeCommandResult] = {}
+        raw_results = data.get("results") or data.get("items") or data.get("shades")
+        if isinstance(raw_results, list):
+            for entry in raw_results:
+                if not isinstance(entry, dict):
+                    continue
+                raw_id = entry.get("id")
+                if raw_id is None:
+                    continue
+                shade_id = str(raw_id)
+                entry_status = self._normalize_status(entry.get("status"))
+                if entry_status is None and "success" in entry:
+                    entry_status = "success" if entry.get("success") else "failure"
+                if entry_status is None and "result" in entry:
+                    entry_status = self._normalize_status(entry.get("result"))
+                message = self._extract_message(entry)
+                results[shade_id] = ShadeCommandResult(
+                    status=entry_status or ("success" if status != "failure" else "failure"),
+                    message=message,
+                )
+        elif isinstance(raw_results, dict):
+            for raw_id, entry in raw_results.items():
+                shade_id = str(raw_id)
+                if isinstance(entry, dict):
+                    entry_status = self._normalize_status(entry.get("status"))
+                    if entry_status is None and "success" in entry:
+                        entry_status = "success" if entry.get("success") else "failure"
+                    message = self._extract_message(entry)
+                else:
+                    entry_status = self._normalize_status(entry)
+                    message = None
+                results[shade_id] = ShadeCommandResult(
+                    status=entry_status or ("success" if status != "failure" else "failure"),
+                    message=message,
+                )
+
+        return ShadeCommandResponse(status=status, results=results)
+
+    @staticmethod
+    def _normalize_status(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return lowered or None
+        if isinstance(value, bool):
+            return "success" if value else "failure"
+        if isinstance(value, (int, float)):
+            return "success" if value else "failure"
+        return None
+
+    @staticmethod
+    def _extract_message(entry: dict[str, Any]) -> str | None:
+        for key in ("message", "error", "reason", "details"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
 
     async def async_logout(self) -> None:
         """Close the API session and forget credentials."""

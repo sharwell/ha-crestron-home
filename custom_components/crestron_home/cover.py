@@ -2,41 +2,33 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from homeassistant.components.cover import CoverDeviceClass, CoverEntity
+from homeassistant.components.cover import (
+    ATTR_POSITION,
+    CoverDeviceClass,
+    CoverEntity,
+    CoverEntityFeature,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     CONF_INVERT,
+    DATA_WRITE_BATCHER,
     DATA_SHADES_COORDINATOR,
     DEFAULT_INVERT,
     DOMAIN,
-    SHADE_POSITION_MAX,
+    pct_to_raw,
+    raw_to_pct,
 )
 from .coordinator import Shade, ShadesCoordinator
-
-
-def _convert_position_to_percentage(raw: int | None, invert: bool) -> int | None:
-    if raw is None:
-        return None
-
-    if not 0 <= raw <= SHADE_POSITION_MAX:
-        return None
-
-    percentage = round(raw * 100 / SHADE_POSITION_MAX)
-    percentage = max(0, min(100, percentage))
-
-    if invert:
-        percentage = 100 - percentage
-
-    return percentage
-
+from .write import ShadeWriteBatcher
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -71,12 +63,21 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
 
     _attr_device_class = CoverDeviceClass.SHADE
     _attr_should_poll = False
+    _attr_supported_features = (
+        CoverEntityFeature.OPEN
+        | CoverEntityFeature.CLOSE
+        | CoverEntityFeature.SET_POSITION
+    )
 
     def __init__(self, coordinator: ShadesCoordinator, entry: ConfigEntry, shade_id: str) -> None:
         super().__init__(coordinator)
         self.config_entry = entry
         self._shade_id = shade_id
         self._attr_unique_id = self.compute_unique_id(entry, shade_id)
+        self._write_batcher = cast(
+            ShadeWriteBatcher,
+            coordinator.hass.data[DOMAIN][entry.entry_id][DATA_WRITE_BATCHER],
+        )
 
     @staticmethod
     def compute_unique_id(entry: ConfigEntry, shade_id: str) -> str:
@@ -127,7 +128,7 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         if shade is None:
             return None
         invert = self.config_entry.options.get(CONF_INVERT, DEFAULT_INVERT)
-        return _convert_position_to_percentage(shade.position, invert)
+        return raw_to_pct(shade.position, invert)
 
     @property
     def is_closed(self) -> bool | None:
@@ -152,3 +153,19 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
             attributes["room_id"] = shade.room_id
         attributes["updated_at"] = shade.updated_at.isoformat()
         return attributes
+
+    async def async_open_cover(self, **kwargs: Any) -> None:
+        await self._async_enqueue_position(100)
+
+    async def async_close_cover(self, **kwargs: Any) -> None:
+        await self._async_enqueue_position(0)
+
+    async def async_set_cover_position(self, **kwargs: Any) -> None:
+        if (position := kwargs.get(ATTR_POSITION)) is None:
+            raise HomeAssistantError("Position value is required")
+        await self._async_enqueue_position(int(position))
+
+    async def _async_enqueue_position(self, percentage: int) -> None:
+        invert = self.config_entry.options.get(CONF_INVERT, DEFAULT_INVERT)
+        raw = pct_to_raw(percentage, invert)
+        await self._write_batcher.enqueue(self._shade_id, raw)
