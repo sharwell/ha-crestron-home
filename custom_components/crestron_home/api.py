@@ -247,11 +247,15 @@ class ApiClient:
             "Content-Type": MIME_TYPE_JSON,
         }
 
+        payload = {"shades": items}
+
+        _LOGGER.debug("POST %s payload=%s", PATH_SHADES_SET_STATE, payload)
+
         try:
             async with session.post(
                 url,
                 headers=headers,
-                json=items,
+                json=payload,
                 timeout=self._timeout,
             ) as response:
                 if response.status in (HTTP_UNAUTHORIZED, HTTP_NETWORK_AUTH_REQUIRED):

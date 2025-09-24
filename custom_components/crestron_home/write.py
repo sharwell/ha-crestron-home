@@ -106,7 +106,7 @@ class ShadeWriteBatcher:
             self._queue = {}
             self._waiters = defaultdict(list)
 
-        payload = [
+        payload_items = [
             {"id": item.shade_id, "position": item.position}
             for item in queued_items.values()
         ]
@@ -114,7 +114,7 @@ class ShadeWriteBatcher:
         ids = [item.shade_id for item in queued_items.values()]
 
         try:
-            response = await self._client.async_set_shade_positions(payload)
+            response = await self._client.async_set_shade_positions(payload_items)
         except ShadeCommandFailedError as err:
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
@@ -131,7 +131,7 @@ class ShadeWriteBatcher:
         status = response.status
         _LOGGER.debug(
             "POST /shades/SetState items=%s ids=%s status=%s",
-            len(payload),
+            len(payload_items),
             ids,
             status,
         )
