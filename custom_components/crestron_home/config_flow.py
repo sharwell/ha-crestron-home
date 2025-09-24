@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,6 +14,9 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError, InvalidAuthError
 from .const import CONFIG_FLOW_TIMEOUT, CONF_API_TOKEN, DEFAULT_VERIFY_SSL, DOMAIN
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -58,22 +62,40 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 verify_ssl=submitted[CONF_VERIFY_SSL],
             )
 
+            request_details = {
+                "host": host,
+                "verify_ssl": submitted[CONF_VERIFY_SSL],
+            }
+            log_level = logging.DEBUG
+            response_details: Any | Exception | None = None
+
             try:
                 async with asyncio.timeout(CONFIG_FLOW_TIMEOUT):
                     rooms = await client.async_get_rooms()
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as err:
+                log_level = logging.WARNING
+                response_details = err
                 errors["base"] = "cannot_connect"
-            except InvalidAuthError:
+            except InvalidAuthError as err:
+                log_level = logging.WARNING
+                response_details = err
                 errors["base"] = "invalid_auth"
-            except CannotConnectError:
+            except CannotConnectError as err:
+                log_level = logging.WARNING
+                response_details = err
                 errors["base"] = "cannot_connect"
-            except CrestronHomeApiError:
+            except CrestronHomeApiError as err:
+                log_level = logging.WARNING
+                response_details = err
                 errors["base"] = "unknown"
             else:
+                response_details = rooms
                 self._rooms_count = len(rooms)
                 self._user_input = submitted
                 return await self.async_step_confirm()
             finally:
+                _LOGGER.log(log_level, "Connection test request: %s", request_details)
+                _LOGGER.log(log_level, "Connection test response: %s", response_details)
                 await client.async_logout()
 
         defaults = submitted or user_input or {}

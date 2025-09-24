@@ -56,7 +56,6 @@ class ApiClient:
         self._api_token = api_token
         self._verify_ssl = verify_ssl
         self._session: ClientSession | None = None
-        self._close_session_on_logout = False
         self._auth_key: str | None = None
         self._timeout = ClientTimeout(total=REQUEST_TIMEOUT)
         self._last_used: float | None = None
@@ -77,10 +76,8 @@ class ApiClient:
 
         if self._verify_ssl:
             self._session = async_get_clientsession(self._hass)
-            self._close_session_on_logout = False
         else:
             self._session = async_create_clientsession(self._hass, verify_ssl=False)
-            self._close_session_on_logout = True
 
         return self._session
 
@@ -190,9 +187,7 @@ class ApiClient:
         self._auth_key = None
         self._last_used = None
 
-        if self._session and self._close_session_on_logout:
-            await self._session.close()
-            self._session = None
+        self._session = None
 
     async def async_close(self) -> None:
         """Alias for logout for compatibility."""
