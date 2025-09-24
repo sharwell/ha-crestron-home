@@ -14,6 +14,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run hassfest
-        uses: home-assistant/actions/hassfest@main
+        uses: home-assistant/actions/hassfest@master
         with:
           integration-path: custom_components/crestron_home
