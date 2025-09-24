@@ -1,0 +1,11 @@
+{
+  "domain": "crestron_home",
+  "name": "Crestron Home",
+  "version": "0.0.0",
+  "documentation": "https://github.com/sharwell/ha-crestron-home",
+  "config_flow": true,
+  "codeowners": [
+    "@sharwell"
+  ],
+  "iot_class": "local_polling"
+}

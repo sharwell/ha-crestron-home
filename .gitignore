@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+.mypy_cache/
+.pytest_cache/
+.sample_config/
+sample_config/
