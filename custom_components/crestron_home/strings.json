@@ -1,0 +1,13 @@
+{
+  "title": "Crestron Home",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Crestron Home"
+      }
+    },
+    "abort": {
+      "not_implemented": "Setup not implemented yet."
+    }
+  }
+}
