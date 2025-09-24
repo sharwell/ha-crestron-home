@@ -142,7 +142,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         if self._boost_until is None or until > self._boost_until:
             self._boost_until = until
         self._refresh_polling_interval()
-        self.async_request_refresh()
+        self.hass.async_create_task(self.async_request_refresh())
 
     async def _async_update_data(self) -> dict[str, Shade]:
         """Fetch shade data from the controller."""
