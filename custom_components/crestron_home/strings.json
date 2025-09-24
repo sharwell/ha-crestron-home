@@ -1,0 +1,14 @@
+{
+  "title": "Crestron Home",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Crestron Home",
+        "description": "This integration does not have any configuration yet."
+      }
+    },
+    "abort": {
+      "not_implemented": "Setup is not implemented yet. Please try again in a future release."
+    }
+  }
+}
