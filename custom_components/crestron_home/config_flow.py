@@ -235,24 +235,30 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return choices
 
     @staticmethod
-    def _normalize_shade_id(value: Any) -> str:
-        """Extract a shade identifier from selector values."""
+    def _selector_value(value: Any) -> Any:
+        """Return the actual payload from Home Assistant selector values."""
 
         if isinstance(value, Mapping):
-            candidate = value.get("value")
-            if candidate is None:
-                candidate = value.get("id")
-            if candidate is not None:
-                return str(candidate).strip()
+            if "value" in value:
+                return value["value"]
+            if "id" in value:
+                return value["id"]
 
         candidate = getattr(value, "value", None)
         if candidate is not None:
-            return str(candidate).strip()
+            return candidate
 
-        if value is None:
+        return value
+
+    @staticmethod
+    def _normalize_shade_id(value: Any) -> str:
+        """Extract a shade identifier from selector values."""
+
+        candidate = CrestronHomeOptionsFlowHandler._selector_value(value)
+        if candidate is None:
             return ""
 
-        return str(value).strip()
+        return str(candidate).strip()
 
     @staticmethod
     def _invert_to_form(value: bool | None) -> str:
@@ -264,9 +270,18 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
     @staticmethod
     def _invert_from_form(value: Any) -> bool | None:
-        if value == "inverted":
+        normalized = CrestronHomeOptionsFlowHandler._selector_value(value)
+        if normalized is None:
+            return None
+
+        if isinstance(normalized, str):
+            lowered = normalized.strip().lower()
+        else:
+            lowered = str(normalized).strip().lower()
+
+        if lowered == "inverted":
             return True
-        if value == "normal":
+        if lowered == "normal":
             return False
         return None
 
@@ -400,14 +415,24 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             self._working_invert_override = self._invert_from_form(
                 user_input.get("invert_axis")
             )
-            action = user_input.get("action", "save")
+            action_raw = user_input.get("action")
+            if action_raw is None:
+                action = "save"
+            else:
+                action = str(self._selector_value(action_raw)).strip().lower()
+                if not action:
+                    action = "save"
 
             if action == "add":
-                insert_after = user_input.get("insert_after")
-                if insert_after is None:
+                insert_after_raw = user_input.get("insert_after")
+                if insert_after_raw is None:
                     insert_index = len(anchors) - 2
                 else:
-                    insert_index = int(insert_after)
+                    insert_after_value = self._selector_value(insert_after_raw)
+                    try:
+                        insert_index = int(insert_after_value)
+                    except (TypeError, ValueError):
+                        insert_index = len(anchors) - 2
                 insert_index = max(0, min(insert_index, len(anchors) - 2))
                 new_anchor = self._new_anchor_between(
                     anchors[insert_index], anchors[insert_index + 1]
@@ -417,11 +442,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_edit_shade()
 
             if action == "remove":
-                remove_index = user_input.get("remove_index")
-                if remove_index is None:
+                remove_index_raw = user_input.get("remove_index")
+                if remove_index_raw is None:
                     remove_idx = 1
                 else:
-                    remove_idx = int(remove_index)
+                    remove_index_value = self._selector_value(remove_index_raw)
+                    try:
+                        remove_idx = int(remove_index_value)
+                    except (TypeError, ValueError):
+                        remove_idx = 1
                 if len(anchors) <= 2 or not (0 < remove_idx < len(anchors) - 1):
                     errors["base"] = ERR_ANCHORS_TOO_FEW
                 else:
