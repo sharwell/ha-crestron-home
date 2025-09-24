@@ -19,6 +19,7 @@ from .const import (
     MIME_TYPE_JSON,
     PATH_LOGIN,
     PATH_ROOMS,
+    PATH_SHADES,
     REQUEST_TIMEOUT,
 )
 
@@ -180,6 +181,31 @@ class ApiClient:
                     return rooms
 
         raise CrestronHomeApiError("Rooms response was not a list")
+
+    async def async_get_shades(self) -> list[Any]:
+        """Return the list of shades from the controller."""
+
+        data = await self.async_request("GET", PATH_SHADES)
+
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("shades", "Shades"):
+                shades = data.get(key)
+                if isinstance(shades, list):
+                    return shades
+
+        raise CrestronHomeApiError("Shades response was not a list")
+
+    async def async_get_shade(self, shade_id: str | int) -> dict[str, Any]:
+        """Return details for a specific shade."""
+
+        data = await self.async_request("GET", f"{PATH_SHADES}/{shade_id}")
+
+        if isinstance(data, dict):
+            return data
+
+        raise CrestronHomeApiError("Shade response was not an object")
 
     async def async_logout(self) -> None:
         """Close the API session and forget credentials."""

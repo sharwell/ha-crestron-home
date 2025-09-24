@@ -29,5 +29,19 @@
     "abort": {
       "already_configured": "This controller is already configured."
     }
+  },
+  "options": {
+    "step": {
+      "options": {
+        "title": "Crestron Home options",
+        "description": "Adjust global settings for Crestron Home shades.",
+        "data": {
+          "invert": "Invert shade position"
+        },
+        "data_description": {
+          "invert": "Enable when the Crestron position reports 0% as fully open but Home Assistant expects 0% as fully closed."
+        }
+      }
+    }
   }
 }

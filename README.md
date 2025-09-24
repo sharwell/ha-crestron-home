@@ -2,7 +2,8 @@
 
 Milestone 1 (M1) introduces authenticated communication with the Crestron Home REST API and a
 connectivity check that confirms the number of rooms reported by the controller before finishing
-setup.
+setup. Milestone 2 (M2) extends the integration with read-only shade telemetry exposed as Home
+Assistant cover entities.
 
 ## Configuration
 
@@ -14,6 +15,18 @@ setup.
    certificate. Disable SSL verification only when the controller uses a self-signed certificate.
 4. Submit to test the connection. The flow logs in, retrieves the list of rooms, and displays how
    many were found before you confirm the configuration.
+
+### Shades (Milestone 2)
+
+- Every Crestron shade is exposed as a Home Assistant `cover` entity with the shade name reported
+  by the controller. Entities surface the most recent shade position and availability status.
+- The coordinator polls shade data every ~12 seconds while idle. Future control commands can call
+  the coordinator's `boost()` helper to switch to 1.5 second polling for short bursts.
+- The **Invert shade position** option is available under the integration's **Options** menu. When
+  enabled, 0% represents fully open (Crestron polarity) instead of fully closed (Home Assistant
+  polarity).
+- Availability is derived from the controller's `connectionStatus` value. Offline shades appear as
+  unavailable in Home Assistant until the controller reports them as connected again.
 
 ## Development setup
 
@@ -29,7 +42,13 @@ setup.
 ## Roadmap
 
 - **Milestone 1:** Implement API client, authentication, and REST connectivity validation.
-- **Milestone 2+:** Expand device coverage, add tests, and integrate discovery/onboarding flows.
+- **Milestone 2:** Surface read-only shade telemetry via cover entities, including availability and
+  global polarity inversion.
+- **Milestone 3:** Write control for shades (open/close/set position) with request batching.
+- **Milestone 4:** Micro-calibration curves to improve visual position uniformity.
+- **Milestone 5:** Stop operation refinements for hold/release behavior.
+- **Milestone 6:** Discovery and UX polish after milestone-wide deliverables.
+- **Milestone 7:** Broader tests, documentation, and practical examples.
 
 ## License
 
