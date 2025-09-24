@@ -111,7 +111,7 @@ class ApiClient:
             except (ContentTypeError, ValueError) as err:
                 raise CrestronHomeApiError("Controller response was not JSON") from err
 
-            auth_key = data.get("AuthKey")
+            auth_key = data.get("authkey") or data.get("AuthKey")
             if not auth_key:
                 raise CrestronHomeApiError("Controller response did not include an auth key")
 
