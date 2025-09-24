@@ -385,7 +385,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         if choices:
             options = [
-                {"value": shade_id, "label": label}
+                {"value": str(shade_id), "label": str(label)}
                 for shade_id, label in choices.items()
             ]
             shade_selector = selector.selector(
