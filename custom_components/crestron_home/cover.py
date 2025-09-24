@@ -130,6 +130,16 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         return _convert_position_to_percentage(shade.position, invert)
 
     @property
+    def is_closed(self) -> bool | None:
+        """Return whether the shade is closed."""
+
+        position = self.current_cover_position
+        if position is None:
+            return None
+
+        return position <= 0
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         shade = self.shade
         if shade is None:
