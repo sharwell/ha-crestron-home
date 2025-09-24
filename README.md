@@ -44,8 +44,11 @@ Assistant cover entities.
 - **Milestone 1:** Implement API client, authentication, and REST connectivity validation.
 - **Milestone 2:** Surface read-only shade telemetry via cover entities, including availability and
   global polarity inversion.
-- **Milestone 3+:** Expand device coverage, add shade control commands, and integrate
-  discovery/onboarding flows.
+- **Milestone 3:** Write control for shades (open/close/set position) with request batching.
+- **Milestone 4:** Micro-calibration curves to improve visual position uniformity.
+- **Milestone 5:** Stop operation refinements for hold/release behavior.
+- **Milestone 6:** Discovery and UX polish after milestone-wide deliverables.
+- **Milestone 7:** Broader tests, documentation, and practical examples.
 
 ## License
 
