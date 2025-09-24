@@ -180,6 +180,15 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 return True
         return False
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow."""
+
+        return CrestronHomeOptionsFlowHandler(config_entry)
+
 
 class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options for the Crestron Home integration."""
@@ -541,10 +550,3 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             errors=errors,
             description_placeholders=description_placeholders,
         )
-
-
-@callback
-def async_get_options_flow(config_entry: ConfigEntry) -> config_entries.OptionsFlow:
-    """Create the options flow."""
-
-    return CrestronHomeOptionsFlowHandler(config_entry)
