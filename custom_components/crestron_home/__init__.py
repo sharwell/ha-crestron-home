@@ -9,9 +9,11 @@ from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL, Platform
 from homeassistant.core import HomeAssistant
 
 from .api import ApiClient
+from .calibration import parse_calibration_options
 from .const import (
     CONF_API_TOKEN,
     DATA_API_CLIENT,
+    DATA_CALIBRATIONS,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
     DEFAULT_VERIFY_SSL,
@@ -50,6 +52,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_API_CLIENT: client,
         DATA_SHADES_COORDINATOR: coordinator,
         DATA_WRITE_BATCHER: batcher,
+        DATA_CALIBRATIONS: parse_calibration_options(entry.options),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

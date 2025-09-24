@@ -24,7 +24,8 @@ Assistant cover entities.
   the coordinator's `boost()` helper to switch to 1.5 second polling for short bursts.
 - The **Invert shade position** option is available under the integration's **Options** menu. When
   enabled, 0% represents fully open (Crestron polarity) instead of fully closed (Home Assistant
-  polarity).
+  polarity). This setting now acts as the global default for the calibration editor introduced in
+  Milestone 4.
 - Availability is derived from the controller's `connectionStatus` value. Offline shades appear as
   unavailable in Home Assistant until the controller reports them as connected again.
 
@@ -43,6 +44,22 @@ Assistant cover entities.
   repo) and trigger a scene that adjusts eight shades at once. A single DEBUG line similar to
   `POST /shades/SetState items=8 ids=[...] status=success` confirms one request served the entire
   batch.
+
+### Calibration (Milestone 4)
+
+- Each shade can expose a micro-calibration curve so intermediate positions align visually across
+  different shade models. Curves are edited from **Options → Calibrate a shade** and consist of at
+  least two anchors describing how a Home Assistant percentage maps to the controller's 0–65535 raw
+  value.
+- Anchors must remain in ascending percent order, start at 0%, and end at 100%. Raw values must
+  never decrease between anchors—flat segments are allowed when a range of raw values should report
+  the same Home Assistant percentage. The options flow validates these rules before saving.
+- The editor supports inserting anchors between any two existing points, removing interior anchors,
+  and resetting back to the default `(0%, 0)` and `(100%, 65535)` endpoints. A per-shade **Invert
+  axis** toggle overrides the global polarity when a single window is mounted opposite the rest.
+- Shade entities automatically apply the configured curve when reporting state and when accepting
+  service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
+  different raw targets while reaching a visually matching opening.
 
 ## Development setup
 

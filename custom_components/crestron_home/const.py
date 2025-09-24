@@ -4,8 +4,30 @@ from __future__ import annotations
 
 DOMAIN = "crestron_home"
 
+SHADE_POSITION_MAX = 65535
+
 CONF_API_TOKEN = "api_token"
 CONF_INVERT = "invert"
+OPT_CALIBRATION = "calibration"
+CAL_KEY_ANCHORS = "anchors"
+CAL_KEY_INVERT = "invert"
+
+CAL_ANCHOR_PC_MIN = 0
+CAL_ANCHOR_PC_MAX = 100
+CAL_ANCHOR_RAW_MIN = 0
+CAL_ANCHOR_RAW_MAX = SHADE_POSITION_MAX
+
+CAL_DEFAULT_ANCHORS = [
+    {"pc": CAL_ANCHOR_PC_MIN, "raw": CAL_ANCHOR_RAW_MIN},
+    {"pc": CAL_ANCHOR_PC_MAX, "raw": CAL_ANCHOR_RAW_MAX},
+]
+
+ERR_ANCHORS_TOO_FEW = "anchors_too_few"
+ERR_ANCHORS_ENDPOINT = "anchors_endpoint"
+ERR_ANCHORS_PC_RANGE = "anchors_pc_range"
+ERR_ANCHORS_RAW_RANGE = "anchors_raw_range"
+ERR_ANCHORS_PC_ORDER = "anchors_pc_order"
+ERR_ANCHORS_RAW_MONOTONIC = "anchors_raw_monotonic"
 
 DEFAULT_VERIFY_SSL = True
 DEFAULT_INVERT = False
@@ -27,44 +49,11 @@ PATH_SHADES_SET_STATE = "/cws/api/shades/SetState"
 DATA_API_CLIENT = "api_client"
 DATA_SHADES_COORDINATOR = "shades_coordinator"
 DATA_WRITE_BATCHER = "write_batcher"
+DATA_CALIBRATIONS = "calibrations"
 
-SHADE_POSITION_MAX = 65535
 SHADE_POLL_INTERVAL_IDLE = 12
 SHADE_POLL_INTERVAL_FAST = 1.5
 SHADE_BOOST_SECONDS = 10
 
 BATCH_DEBOUNCE_MS = 80
 BATCH_MAX_ITEMS = 16
-
-
-def raw_to_pct(raw: int | None, invert: bool) -> int | None:
-    """Convert a Crestron raw position value to a Home Assistant percentage."""
-
-    if raw is None:
-        return None
-
-    if raw < 0:
-        raw = 0
-    elif raw > SHADE_POSITION_MAX:
-        raw = SHADE_POSITION_MAX
-
-    percentage = round(raw * 100 / SHADE_POSITION_MAX)
-    if invert:
-        percentage = 100 - percentage
-
-    return max(0, min(100, percentage))
-
-
-def pct_to_raw(percentage: int, invert: bool) -> int:
-    """Convert a Home Assistant percentage to a Crestron raw position value."""
-
-    pct = max(0, min(100, int(percentage)))
-    if invert:
-        pct = 100 - pct
-
-    raw = round(pct * SHADE_POSITION_MAX / 100)
-    if raw < 0:
-        return 0
-    if raw > SHADE_POSITION_MAX:
-        return SHADE_POSITION_MAX
-    return raw
