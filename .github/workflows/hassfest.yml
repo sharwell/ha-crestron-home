@@ -7,10 +7,6 @@ on:
       - "rel/*"
       - "val/*"
   pull_request:
-    branches:
-      - main
-      - "rel/*"
-      - "val/*"
 
 jobs:
   hassfest:
