@@ -113,10 +113,6 @@ class ShadeWriteBatcher:
 
         ids = [item.shade_id for item in queued_items.values()]
 
-        payload = {"shades": payload_items}
-
-        _LOGGER.debug("POST /shades/SetState payload=%s", payload)
-
         try:
             response = await self._client.async_set_shade_positions(payload_items)
         except ShadeCommandFailedError as err:
