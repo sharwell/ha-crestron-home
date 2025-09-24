@@ -247,6 +247,8 @@ class ApiClient:
             "Content-Type": MIME_TYPE_JSON,
         }
 
+        _LOGGER.debug("POST %s payload=%s", PATH_SHADES_SET_STATE, items)
+
         try:
             async with session.post(
                 url,
