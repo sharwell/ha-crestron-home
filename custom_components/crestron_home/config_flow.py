@@ -367,14 +367,21 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         choices = self._shade_choices()
 
         if user_input is not None:
-            shade_raw = user_input.get("shade")
-            shade_id = self._normalize_shade_id(shade_raw)
-            if not shade_id:
-                errors["base"] = "select_shade"
-            else:
-                self._selected_shade_id = shade_id
-                self._load_working_calibration(shade_id)
-                return await self.async_step_edit_shade()
+            try:
+                shade_raw = user_input.get("shade")
+                shade_id = self._normalize_shade_id(shade_raw)
+                if not shade_id:
+                    errors["base"] = "select_shade"
+                else:
+                    self._selected_shade_id = shade_id
+                    self._load_working_calibration(shade_id)
+                    return await self.async_step_edit_shade()
+            except Exception:  # pragma: no cover - defensive logging
+                _LOGGER.exception(
+                    "Unexpected error while handling shade selection: %s", user_input
+                )
+                if "base" not in errors:
+                    errors["base"] = "unknown"
 
         if choices:
             options = [
@@ -410,95 +417,106 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            anchors = self._anchors_from_input(user_input)
-            self._working_anchors = anchors
-            self._working_invert_override = self._invert_from_form(
-                user_input.get("invert_axis")
-            )
-            action_raw = user_input.get("action")
-            if action_raw is None:
-                action = "save"
-            else:
-                action = str(self._selector_value(action_raw)).strip().lower()
-                if not action:
-                    action = "save"
-
-            if action == "add":
-                insert_after_raw = user_input.get("insert_after")
-                if insert_after_raw is None:
-                    insert_index = len(anchors) - 2
-                else:
-                    insert_after_value = self._selector_value(insert_after_raw)
-                    try:
-                        insert_index = int(insert_after_value)
-                    except (TypeError, ValueError):
-                        insert_index = len(anchors) - 2
-                insert_index = max(0, min(insert_index, len(anchors) - 2))
-                new_anchor = self._new_anchor_between(
-                    anchors[insert_index], anchors[insert_index + 1]
-                )
-                anchors.insert(insert_index + 1, new_anchor)
+            try:
+                anchors = self._anchors_from_input(user_input)
                 self._working_anchors = anchors
-                return await self.async_step_edit_shade()
+                self._working_invert_override = self._invert_from_form(
+                    user_input.get("invert_axis")
+                )
+                action_raw = user_input.get("action")
+                if action_raw is None:
+                    action = "save"
+                else:
+                    action = str(self._selector_value(action_raw)).strip().lower()
+                    if not action:
+                        action = "save"
 
-            if action == "remove":
-                remove_index_raw = user_input.get("remove_index")
-                if remove_index_raw is None:
-                    remove_idx = 1
-                else:
-                    remove_index_value = self._selector_value(remove_index_raw)
-                    try:
-                        remove_idx = int(remove_index_value)
-                    except (TypeError, ValueError):
-                        remove_idx = 1
-                if len(anchors) <= 2 or not (0 < remove_idx < len(anchors) - 1):
-                    errors["base"] = ERR_ANCHORS_TOO_FEW
-                else:
-                    anchors.pop(remove_idx)
+                if action == "add":
+                    insert_after_raw = user_input.get("insert_after")
+                    if insert_after_raw is None:
+                        insert_index = len(anchors) - 2
+                    else:
+                        insert_after_value = self._selector_value(insert_after_raw)
+                        try:
+                            insert_index = int(insert_after_value)
+                        except (TypeError, ValueError):
+                            insert_index = len(anchors) - 2
+                    insert_index = max(0, min(insert_index, len(anchors) - 2))
+                    new_anchor = self._new_anchor_between(
+                        anchors[insert_index], anchors[insert_index + 1]
+                    )
+                    anchors.insert(insert_index + 1, new_anchor)
                     self._working_anchors = anchors
                     return await self.async_step_edit_shade()
 
-            if action == "reset":
-                self._working_anchors = [
-                    {"pc": pc, "raw": raw} for pc, raw in DEFAULT_ANCHORS
-                ]
-                self._working_invert_override = None
-                return await self.async_step_edit_shade()
-
-            if action == "cancel":
-                self._selected_shade_id = None
-                self._working_anchors = None
-                self._working_invert_override = None
-                return await self.async_step_select_shade()
-
-            if action == "save":
-                try:
-                    anchors_tuple = validate_anchors(self._working_anchors)
-                except InvalidCalibrationError as err:
-                    errors["base"] = err.code
-                else:
-                    calibration = ShadeCalibration(
-                        anchors=anchors_tuple,
-                        invert_override=self._working_invert_override,
-                    )
-                    if (
-                        calibration.anchors == DEFAULT_ANCHORS
-                        and calibration.invert_override is None
-                    ):
-                        remove_calibration_option(
-                            self._options, self._selected_shade_id
-                        )
+                if action == "remove":
+                    remove_index_raw = user_input.get("remove_index")
+                    if remove_index_raw is None:
+                        remove_idx = 1
                     else:
-                        update_calibration_option(
-                            self._options, self._selected_shade_id, calibration
-                        )
-                    self._calibration_collection = parse_calibration_options(
-                        self._options
-                    )
+                        remove_index_value = self._selector_value(remove_index_raw)
+                        try:
+                            remove_idx = int(remove_index_value)
+                        except (TypeError, ValueError):
+                            remove_idx = 1
+                    if len(anchors) <= 2 or not (0 < remove_idx < len(anchors) - 1):
+                        errors["base"] = ERR_ANCHORS_TOO_FEW
+                    else:
+                        anchors.pop(remove_idx)
+                        self._working_anchors = anchors
+                        return await self.async_step_edit_shade()
+
+                if action == "reset":
+                    self._working_anchors = [
+                        {"pc": pc, "raw": raw} for pc, raw in DEFAULT_ANCHORS
+                    ]
+                    self._working_invert_override = None
+                    return await self.async_step_edit_shade()
+
+                if action == "cancel":
                     self._selected_shade_id = None
                     self._working_anchors = None
                     self._working_invert_override = None
                     return await self.async_step_select_shade()
+
+                if action == "save":
+                    try:
+                        anchors_tuple = validate_anchors(self._working_anchors)
+                    except InvalidCalibrationError as err:
+                        errors["base"] = err.code
+                    else:
+                        calibration = ShadeCalibration(
+                            anchors=anchors_tuple,
+                            invert_override=self._working_invert_override,
+                        )
+                        if (
+                            calibration.anchors == DEFAULT_ANCHORS
+                            and calibration.invert_override is None
+                        ):
+                            remove_calibration_option(
+                                self._options, self._selected_shade_id
+                            )
+                        else:
+                            update_calibration_option(
+                                self._options, self._selected_shade_id, calibration
+                            )
+                        self._calibration_collection = parse_calibration_options(
+                            self._options
+                        )
+                        self._selected_shade_id = None
+                        self._working_anchors = None
+                        self._working_invert_override = None
+                        return await self.async_step_select_shade()
+            except Exception:  # pragma: no cover - defensive logging
+                _LOGGER.exception(
+                    "Unexpected error while handling shade calibration: %s",
+                    {
+                        "shade_id": self._selected_shade_id,
+                        "user_input": user_input,
+                    },
+                )
+                if "base" not in errors:
+                    errors["base"] = "unknown"
 
         schema_dict: OrderedDict[Any, Any] = OrderedDict()
         assert self._working_anchors is not None
