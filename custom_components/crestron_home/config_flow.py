@@ -194,7 +194,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options for the Crestron Home integration."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
-        self.config_entry = config_entry
+        self._config_entry = config_entry
 
         base_options = dict(config_entry.options)
         self._options: dict[str, Any] = copy.deepcopy(base_options)
@@ -212,7 +212,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         domain_data = self.hass.data.get(DOMAIN)
         if not domain_data:
             return None
-        entry_data = domain_data.get(self.config_entry.entry_id)
+        entry_data = domain_data.get(self._config_entry.entry_id)
         if not entry_data:
             return None
         coordinator = entry_data.get(DATA_SHADES_COORDINATOR)
