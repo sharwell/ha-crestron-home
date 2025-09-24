@@ -3,11 +3,31 @@
   "config": {
     "step": {
       "user": {
-        "title": "Crestron Home"
+        "title": "Crestron Home",
+        "description": "Provide connection details for your Crestron Home controller.",
+        "data": {
+          "host": "Host",
+          "api_token": "Web API token",
+          "verify_ssl": "Verify SSL certificate"
+        },
+        "data_description": {
+          "api_token": "Create this token in the controller UI under Settings → System Control Options → Web API Settings.",
+          "verify_ssl": "Disable only when the controller uses a self-signed certificate."
+        }
+      },
+      "confirm": {
+        "title": "Crestron Home",
+        "description": "Connection successful. Found {rooms} rooms on {host}.",
+        "submit": "Finish"
       }
     },
+    "error": {
+      "invalid_auth": "Invalid authentication token.",
+      "cannot_connect": "Failed to connect to the controller.",
+      "unknown": "Unexpected error occurred."
+    },
     "abort": {
-      "not_implemented": "Setup not implemented yet."
+      "already_configured": "This controller is already configured."
     }
   }
 }
