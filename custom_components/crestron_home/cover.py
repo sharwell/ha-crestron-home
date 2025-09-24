@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, cast
 
 from homeassistant.components.cover import (
@@ -157,13 +159,31 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
     async def async_open_cover(self, **kwargs: Any) -> None:
         await self._async_enqueue_position(100)
 
+    def open_cover(self, **kwargs: Any) -> None:
+        asyncio.run_coroutine_threadsafe(
+            self.async_open_cover(**kwargs),
+            self.hass.loop,
+        ).result()
+
     async def async_close_cover(self, **kwargs: Any) -> None:
         await self._async_enqueue_position(0)
+
+    def close_cover(self, **kwargs: Any) -> None:
+        asyncio.run_coroutine_threadsafe(
+            self.async_close_cover(**kwargs),
+            self.hass.loop,
+        ).result()
 
     async def async_set_cover_position(self, **kwargs: Any) -> None:
         if (position := kwargs.get(ATTR_POSITION)) is None:
             raise HomeAssistantError("Position value is required")
         await self._async_enqueue_position(int(position))
+
+    def set_cover_position(self, **kwargs: Any) -> None:
+        asyncio.run_coroutine_threadsafe(
+            self.async_set_cover_position(**kwargs),
+            self.hass.loop,
+        ).result()
 
     async def _async_enqueue_position(self, percentage: int) -> None:
         invert = self.config_entry.options.get(CONF_INVERT, DEFAULT_INVERT)
