@@ -9,11 +9,20 @@ from urllib.parse import urlparse
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError, InvalidAuthError
-from .const import CONFIG_FLOW_TIMEOUT, CONF_API_TOKEN, DEFAULT_VERIFY_SSL, DOMAIN
+from .const import (
+    CONFIG_FLOW_TIMEOUT,
+    CONF_API_TOKEN,
+    CONF_INVERT,
+    DEFAULT_INVERT,
+    DEFAULT_VERIFY_SSL,
+    DOMAIN,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,6 +147,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_API_TOKEN: self._user_input[CONF_API_TOKEN],
                 CONF_VERIFY_SSL: bool(self._user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)),
             },
+            options={CONF_INVERT: DEFAULT_INVERT},
         )
 
     def _host_already_configured(self, host: str) -> bool:
@@ -149,3 +159,39 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if existing_host == normalized_host:
                 return True
         return False
+
+
+class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options for the Crestron Home integration."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        return await self.async_step_options(user_input)
+
+    async def async_step_options(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = self.config_entry.options
+        data_schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_INVERT,
+                    default=options.get(CONF_INVERT, DEFAULT_INVERT),
+                ): bool,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="options",
+            data_schema=data_schema,
+        )
+
+
+@callback
+def async_get_options_flow(config_entry: ConfigEntry) -> config_entries.OptionsFlow:
+    """Create the options flow."""
+
+    return CrestronHomeOptionsFlowHandler(config_entry)
