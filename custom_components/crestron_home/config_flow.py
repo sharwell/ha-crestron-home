@@ -235,6 +235,26 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return choices
 
     @staticmethod
+    def _normalize_shade_id(value: Any) -> str:
+        """Extract a shade identifier from selector values."""
+
+        if isinstance(value, Mapping):
+            candidate = value.get("value")
+            if candidate is None:
+                candidate = value.get("id")
+            if candidate is not None:
+                return str(candidate).strip()
+
+        candidate = getattr(value, "value", None)
+        if candidate is not None:
+            return str(candidate).strip()
+
+        if value is None:
+            return ""
+
+        return str(value).strip()
+
+    @staticmethod
     def _invert_to_form(value: bool | None) -> str:
         if value is True:
             return "inverted"
@@ -333,7 +353,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         if user_input is not None:
             shade_raw = user_input.get("shade")
-            shade_id = str(shade_raw).strip()
+            shade_id = self._normalize_shade_id(shade_raw)
             if not shade_id:
                 errors["base"] = "select_shade"
             else:
