@@ -167,3 +167,44 @@ def test_normalize_shade_id_from_none() -> None:
     """None should be treated as an empty selection."""
 
     assert CrestronHomeOptionsFlowHandler._normalize_shade_id(None) == ""
+
+
+def test_selector_value_from_mapping() -> None:
+    """Selector helper should read the value entry when provided."""
+
+    assert (
+        CrestronHomeOptionsFlowHandler._selector_value(
+            {"value": "option-123", "label": "Option"}
+        )
+        == "option-123"
+    )
+
+
+def test_selector_value_from_object_attribute() -> None:
+    """Selector helper should read the value attribute on option objects."""
+
+    option = _SelectorValue("option-456", "Label")
+    assert CrestronHomeOptionsFlowHandler._selector_value(option) == "option-456"
+
+
+def test_invert_from_form_handles_selector_mapping() -> None:
+    """Selector payloads should be normalized before interpreting the invert choice."""
+
+    assert (
+        CrestronHomeOptionsFlowHandler._invert_from_form(
+            {"value": "normal", "label": "Normal axis"}
+        )
+        is False
+    )
+    assert (
+        CrestronHomeOptionsFlowHandler._invert_from_form(
+            {"value": "inverted", "label": "Invert axis"}
+        )
+        is True
+    )
+    assert (
+        CrestronHomeOptionsFlowHandler._invert_from_form(
+            {"value": "default", "label": "Use global default"}
+        )
+        is None
+    )
