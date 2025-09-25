@@ -1,0 +1,118 @@
+blueprint:
+  name: "Crestron Home – Matter shade hold/release"
+  description: |
+    Wire a Matter wall switch (or remote) to Crestron Home shades using
+    hold-to-move and release-to-stop semantics.
+
+    Select the Matter devices that expose the "open" and "close" buttons, then
+    pick the matching device triggers for **hold** and **release**. Matter
+    button drivers use different trigger type/subtype names (for example,
+    `long_press`, `hold`, or `button_long_press`), so the blueprint exposes the
+    trigger selectors directly—pick the hold and release variants reported for
+    each button in **Settings → Automations & Scenes → Device Automations**.
+
+    Hold either button to call `cover.open_cover` or `cover.close_cover` on the
+    selected shades. Releasing either button calls `cover.stop_cover`, which
+    posts the currently reported shade positions back through the Crestron REST
+    API to approximate a STOP command.
+  domain: automation
+  author: "Samuel Harwell (@sharwell)"
+  input:
+    open_device:
+      name: Open button device
+      description: Matter device that exposes the "open" button.
+      selector:
+        device:
+          integration: matter
+    close_device:
+      name: Close button device
+      description: Matter device that exposes the "close" button.
+      selector:
+        device:
+          integration: matter
+    open_hold_trigger:
+      name: Open button hold trigger
+      description: Select the Matter device trigger that fires while the open button is held.
+      selector:
+        trigger:
+          device:
+            integration: matter
+    close_hold_trigger:
+      name: Close button hold trigger
+      description: Select the Matter device trigger that fires while the close button is held.
+      selector:
+        trigger:
+          device:
+            integration: matter
+    open_release_trigger:
+      name: Open button release trigger
+      description: Select the Matter device trigger that fires when the open button is released.
+      selector:
+        trigger:
+          device:
+            integration: matter
+    close_release_trigger:
+      name: Close button release trigger
+      description: Select the Matter device trigger that fires when the close button is released.
+      selector:
+        trigger:
+          device:
+            integration: matter
+    covers:
+      name: Target shades
+      description: Crestron Home shades to control.
+      selector:
+        target:
+          entity:
+            domain: cover
+            integration: crestron_home
+mode: restart
+max_exceeded: silent
+variables:
+  open_device_id: !input open_device
+  close_device_id: !input close_device
+trigger:
+  - id: open_hold
+    alias: "Open button hold"
+    <<: !input open_hold_trigger
+  - id: close_hold
+    alias: "Close button hold"
+    <<: !input close_hold_trigger
+  - id: open_release
+    alias: "Open button release"
+    <<: !input open_release_trigger
+  - id: close_release
+    alias: "Close button release"
+    <<: !input close_release_trigger
+condition: []
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: open_hold
+          - condition: template
+            value_template: "{{ trigger.device_id == open_device_id }}"
+        sequence:
+          - service: cover.open_cover
+            target: !input covers
+      - conditions:
+          - condition: trigger
+            id: close_hold
+          - condition: template
+            value_template: "{{ trigger.device_id == close_device_id }}"
+        sequence:
+          - service: cover.close_cover
+            target: !input covers
+      - conditions:
+          - condition: trigger
+            id: open_release
+        sequence:
+          - service: cover.stop_cover
+            target: !input covers
+      - conditions:
+          - condition: trigger
+            id: close_release
+        sequence:
+          - service: cover.stop_cover
+            target: !input covers
+    default: []

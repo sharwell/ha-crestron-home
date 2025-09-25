@@ -70,6 +70,7 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
         | CoverEntityFeature.SET_POSITION
+        | CoverEntityFeature.STOP
     )
 
     def __init__(self, coordinator: ShadesCoordinator, entry: ConfigEntry, shade_id: str) -> None:
@@ -200,6 +201,42 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
             self.hass.loop,
         ).result()
 
+    async def async_stop_cover(self, **kwargs: Any) -> None:
+        if (raw := self._resolve_current_raw_position()) is None:
+            _LOGGER.debug(
+                "Shade %s stop request skipped because position is unknown",
+                self._shade_id,
+            )
+            return
+
+        await self._write_batcher.enqueue(self._shade_id, raw)
+
+    def stop_cover(self, **kwargs: Any) -> None:
+        asyncio.run_coroutine_threadsafe(
+            self.async_stop_cover(**kwargs),
+            self.hass.loop,
+        ).result()
+
     async def _async_enqueue_position(self, percentage: int) -> None:
         raw = pct_to_raw(percentage, self._shade_calibration.anchors, self._invert_axis)
         await self._write_batcher.enqueue(self._shade_id, raw)
+
+    def _resolve_current_raw_position(self) -> int | None:
+        shade = self.shade
+        if shade is not None and shade.position is not None:
+            return shade.position
+
+        percent: int | None = self.current_cover_position
+        if percent is None:
+            if state := self.hass.states.get(self.entity_id):
+                value = state.attributes.get("current_position")
+                if value is not None:
+                    try:
+                        percent = int(value)
+                    except (TypeError, ValueError):
+                        percent = None
+
+        if percent is None:
+            return None
+
+        return pct_to_raw(percent, self._shade_calibration.anchors, self._invert_axis)

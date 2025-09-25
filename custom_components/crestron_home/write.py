@@ -14,7 +14,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.translation import async_get_cached_translations
 
 from .api import ApiClient, CrestronHomeApiError, ShadeCommandFailedError, ShadeCommandResult
-from .const import BATCH_DEBOUNCE_MS, BATCH_MAX_ITEMS, DOMAIN
+from .const import (
+    BATCH_DEBOUNCE_MS,
+    BATCH_MAX_ITEMS,
+    DOMAIN,
+    LOG_KEY_BATCH,
+    PATH_SHADES_SET_STATE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,10 +136,18 @@ class ShadeWriteBatcher:
 
         status = response.status
         _LOGGER.debug(
-            "POST /shades/SetState items=%s ids=%s status=%s",
+            "POST %s items=%s ids=%s status=%s",
+            PATH_SHADES_SET_STATE,
             len(payload_items),
             ids,
             status,
+            extra={
+                LOG_KEY_BATCH: {
+                    "count": len(payload_items),
+                    "ids": ids,
+                    "status": status,
+                }
+            },
         )
 
         if self._on_success is not None:

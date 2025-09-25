@@ -46,6 +46,8 @@ PATH_ROOMS = "/cws/api/rooms"
 PATH_SHADES = "/cws/api/shades"
 PATH_SHADES_SET_STATE = "/cws/api/shades/SetState"
 
+LOG_KEY_BATCH = "batch"
+
 DATA_API_CLIENT = "api_client"
 DATA_SHADES_COORDINATOR = "shades_coordinator"
 DATA_WRITE_BATCHER = "write_batcher"
