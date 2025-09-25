@@ -16,7 +16,7 @@ blueprint:
     posts the currently reported shade positions back through the Crestron REST
     API to approximate a STOP command.
   domain: automation
-  author: "Samuel Harwell (@sharwell)"
+  author: "Sam Harwell (@sharwell)"
   input:
     open_device:
       name: Open button device
