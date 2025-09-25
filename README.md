@@ -61,6 +61,25 @@ Assistant cover entities.
   service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
   different raw targets while reaching a visually matching opening.
 
+### Hold-to-move stop (Milestone 5A)
+
+- Shade entities now advertise the `stop_cover` service. Because the REST API does not expose a
+  native STOP command, the integration performs a best-effort freeze: it reads each shade's most
+  recent reported position and posts that value straight back to
+  `POST /cws/api/shades/SetState`. The same batcher used for open/close/set commands collects STOP
+  requests for up to 80 ms so scenes or simultaneous button releases flush as one payload. The
+  coordinator immediately bumps into fast polling so Home Assistant reflects the halted position as
+  soon as the controller reports it.
+- If a shade's current position is unavailable at release time the STOP request skips that shade
+  (others still post). Calibrations and per-shade polarity continue to apply when the integration
+  needs to map a Home Assistant percentage back to the controller's raw 0–65535 range.
+- A Matter wall switch blueprint at
+  `blueprints/automation/crestron_home/matter_shade_hold_release.yaml` demonstrates hold/release
+  wiring. Choose the Matter devices that expose the open/close buttons and pick the corresponding
+  hold and release device triggers surfaced by the Matter driver. Holding calls `cover.open_cover`
+  or `cover.close_cover`; releasing either button calls `cover.stop_cover` so shades coast to a
+  stop.
+
 ## Development setup
 
 1. Clone [home-assistant/core](https://github.com/home-assistant/core) next to this repository:
