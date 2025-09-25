@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
-from typing import Any
+import time
+from typing import Any, Sequence
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -13,13 +14,17 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util.dt import utcnow
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError
+from .calibration import CalibrationCollection, raw_to_pct
 from .const import (
     DOMAIN,
     SHADE_BOOST_SECONDS,
+    SHADE_BURST_SECONDS,
+    SHADE_POLL_INTERVAL_BURST,
     SHADE_POLL_INTERVAL_FAST,
     SHADE_POLL_INTERVAL_IDLE,
     SHADE_POSITION_MAX,
 )
+from .predictive_stop import PlanResult, PredictiveRuntime
 
 __all__ = ["Shade", "ShadesCoordinator"]
 
@@ -106,7 +111,14 @@ class Shade:
 class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
     """Coordinate shade state updates from the Crestron Home controller."""
 
-    def __init__(self, hass: HomeAssistant, client: ApiClient, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: ApiClient,
+        entry: ConfigEntry,
+        predictive: PredictiveRuntime,
+        calibrations: CalibrationCollection,
+    ) -> None:
         super().__init__(
             hass,
             _LOGGER,
@@ -117,8 +129,12 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         self.config_entry = entry
         self._idle_interval = timedelta(seconds=SHADE_POLL_INTERVAL_IDLE)
         self._fast_interval = timedelta(seconds=SHADE_POLL_INTERVAL_FAST)
+        self._burst_interval = timedelta(seconds=SHADE_POLL_INTERVAL_BURST)
         self._boost_until: datetime | None = None
+        self._burst_until: datetime | None = None
         self._last_payload: list[Any] = []
+        self._predictive = predictive
+        self._calibrations = calibrations
 
     @property
     def client(self) -> ApiClient:
@@ -144,6 +160,16 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         self._refresh_polling_interval()
         self.hass.async_create_task(self.async_request_refresh())
 
+    def burst(self, seconds: float = SHADE_BURST_SECONDS) -> None:
+        if seconds <= 0:
+            return
+
+        until = utcnow() + timedelta(seconds=seconds)
+        if self._burst_until is None or until > self._burst_until:
+            self._burst_until = until
+        self._refresh_polling_interval()
+        self.hass.async_create_task(self.async_request_refresh())
+
     async def _async_update_data(self) -> dict[str, Shade]:
         """Fetch shade data from the controller."""
 
@@ -162,6 +188,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         if not isinstance(payload, list):
             raise UpdateFailed("Shades payload was not a list")
 
+        monotonic_now = time.monotonic()
         for item in payload:
             if not isinstance(item, dict):
                 _LOGGER.debug("Skipping shade entry because it is not a dict: %s", item)
@@ -197,6 +224,17 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
 
             shades[shade.id] = shade
 
+            if shade.position is not None:
+                calibration = self._calibrations.for_shade(shade.id)
+                invert = calibration.resolved_invert(self._calibrations.global_invert)
+                pct = raw_to_pct(shade.position, calibration.anchors, invert)
+                if pct is not None:
+                    self._predictive.record_poll(
+                        shade_id=shade.id,
+                        timestamp=monotonic_now,
+                        position=pct / 100.0,
+                    )
+
             if not position_changed:
                 previous = previous_data.get(shade.id)
                 if previous is not None and previous.position != shade.position:
@@ -209,10 +247,18 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         return shades
 
     def _refresh_polling_interval(self) -> None:
-        if self._boost_until is not None and self._boost_until <= utcnow():
+        now = utcnow()
+        if self._boost_until is not None and self._boost_until <= now:
             self._boost_until = None
+        if self._burst_until is not None and self._burst_until <= now:
+            self._burst_until = None
 
-        target = self._fast_interval if self._boost_until else self._idle_interval
+        if self._burst_until:
+            target = self._burst_interval
+        elif self._boost_until:
+            target = self._fast_interval
+        else:
+            target = self._idle_interval
         if self.update_interval != target:
             self.update_interval = target
 
@@ -220,3 +266,11 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         """Public helper to temporarily poll faster after a write."""
 
         self.boost(seconds)
+
+    @property
+    def predictive(self) -> PredictiveRuntime:
+        return self._predictive
+
+    def plan_stop(self, shade_ids: Sequence[str]) -> PlanResult:
+        now = time.monotonic()
+        return self._predictive.plan_stop(shade_ids, timestamp=now)

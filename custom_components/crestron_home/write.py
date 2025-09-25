@@ -73,6 +73,11 @@ class ShadeWriteBatcher:
 
         await future
 
+    async def async_flush(self) -> None:
+        """Flush the current queue immediately."""
+
+        await self._flush_now()
+
     def _schedule_timer(self) -> None:
         if self._debounce_seconds <= 0:
             self._hass.async_create_task(self._flush_now())
