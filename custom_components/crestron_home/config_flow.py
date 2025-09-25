@@ -573,9 +573,9 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 current = self._working_anchors[index]
                 nxt = self._working_anchors[index + 1]
                 label = f"Between {current['pc']}% and {nxt['pc']}%"
-                insert_options.append({"value": index, "label": label})
+                insert_options.append({"value": str(index), "label": label})
             schema_dict[vol.Optional(
-                "insert_after", default=len(self._working_anchors) - 2
+                "insert_after", default=str(len(self._working_anchors) - 2)
             )] = selector.selector(
                 {
                     "select": {
@@ -590,8 +590,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             for index in range(1, len(self._working_anchors) - 1):
                 anchor = self._working_anchors[index]
                 label = f"Anchor at {anchor['pc']}%"
-                remove_options.append({"value": index, "label": label})
-            schema_dict[vol.Optional("remove_index", default=1)] = selector.selector(
+                remove_options.append({"value": str(index), "label": label})
+            schema_dict[vol.Optional("remove_index", default="1")] = selector.selector(
                 {
                     "select": {
                         "options": remove_options,
