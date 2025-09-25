@@ -14,12 +14,28 @@ from .const import (
     CONF_API_TOKEN,
     DATA_API_CLIENT,
     DATA_CALIBRATIONS,
+    DATA_PREDICTIVE_MANAGER,
+    DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
+    OPT_PREDICTIVE_STOP,
+    PREDICTIVE_DEFAULT_ENABLED,
+    PREDICTIVE_DIAGNOSTIC_HISTORY,
+    PREDICTIVE_MIN_CONFIDENCE_SCALE,
+    PREDICTIVE_RLS_FORGETTING,
+    PREDICTIVE_STORAGE_KEY_PREFIX,
+    PREDICTIVE_STORAGE_VERSION,
+    PREDICTIVE_TAU_ACC,
+    PREDICTIVE_TAU_DEC,
+    PREDICTIVE_TAU_RESP_ALPHA,
+    PREDICTIVE_TAU_RESP_INIT,
 )
 from .coordinator import ShadesCoordinator
+from .learning import LearningManager
+from .predictive_stop import PredictiveRuntime
+from .storage import PredictiveStopStore, PredictiveStoreData
 from .write import ShadeWriteBatcher
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,7 +55,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Creating API client for %s", host)
     client = ApiClient(hass, host, api_token, verify_ssl=verify_ssl)
 
-    coordinator = ShadesCoordinator(hass, client, entry)
+    predictive_store = PredictiveStopStore(
+        hass,
+        entry_id=entry.entry_id,
+        version=PREDICTIVE_STORAGE_VERSION,
+        key_prefix=PREDICTIVE_STORAGE_KEY_PREFIX,
+    )
+    stored = await predictive_store.async_load()
+    learning_defaults = {
+        "v0": 0.4,
+        "v1": 0.0,
+        "tau_resp": PREDICTIVE_TAU_RESP_INIT,
+        "forgetting": PREDICTIVE_RLS_FORGETTING,
+        "tau_resp_alpha": PREDICTIVE_TAU_RESP_ALPHA,
+    }
+    learning_manager = LearningManager.from_dict(stored.shades, defaults=learning_defaults)
+    predictive_runtime = PredictiveRuntime(
+        learning=learning_manager,
+        tau_acc=PREDICTIVE_TAU_ACC,
+        tau_dec=PREDICTIVE_TAU_DEC,
+        tau_resp_init=PREDICTIVE_TAU_RESP_INIT,
+        min_confidence_scale=PREDICTIVE_MIN_CONFIDENCE_SCALE,
+        history_size=PREDICTIVE_DIAGNOSTIC_HISTORY,
+    )
+    predictive_runtime.enabled = entry.options.get(OPT_PREDICTIVE_STOP, PREDICTIVE_DEFAULT_ENABLED)
+
+    calibrations = parse_calibration_options(entry.options)
+
+    coordinator = ShadesCoordinator(
+        hass,
+        client,
+        entry,
+        predictive_runtime,
+        calibrations,
+    )
     await coordinator.async_config_entry_first_refresh()
 
     batcher = ShadeWriteBatcher(
@@ -52,7 +101,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DATA_API_CLIENT: client,
         DATA_SHADES_COORDINATOR: coordinator,
         DATA_WRITE_BATCHER: batcher,
-        DATA_CALIBRATIONS: parse_calibration_options(entry.options),
+        DATA_CALIBRATIONS: calibrations,
+        DATA_PREDICTIVE_MANAGER: predictive_runtime,
+        DATA_PREDICTIVE_STORAGE: predictive_store,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -79,6 +130,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     batcher: ShadeWriteBatcher | None = stored.get(DATA_WRITE_BATCHER)
     if batcher is not None:
         await batcher.async_shutdown()
+
+    predictive_store: PredictiveStopStore | None = stored.get(DATA_PREDICTIVE_STORAGE)
+    predictive_runtime: PredictiveRuntime | None = stored.get(DATA_PREDICTIVE_MANAGER)
+    if predictive_store and predictive_runtime:
+        await predictive_store.async_save(
+            PredictiveStoreData(
+                version=PREDICTIVE_STORAGE_VERSION,
+                shades=predictive_runtime.serialize_learning(),
+            )
+        )
 
     client: ApiClient | None = stored.get(DATA_API_CLIENT)
     if client is not None:

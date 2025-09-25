@@ -36,13 +36,19 @@ from .const import (
     CONFIG_FLOW_TIMEOUT,
     CONF_API_TOKEN,
     CONF_INVERT,
+    DATA_PREDICTIVE_MANAGER,
+    DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DEFAULT_INVERT,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
     ERR_ANCHORS_TOO_FEW,
+    OPT_PREDICTIVE_STOP,
+    PREDICTIVE_DEFAULT_ENABLED,
 )
 from .coordinator import Shade, ShadesCoordinator
+from .predictive_stop import PredictiveRuntime
+from .storage import PredictiveStopStore
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -167,7 +173,10 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_API_TOKEN: self._user_input[CONF_API_TOKEN],
                 CONF_VERIFY_SSL: bool(self._user_input.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)),
             },
-            options={CONF_INVERT: DEFAULT_INVERT},
+            options={
+                CONF_INVERT: DEFAULT_INVERT,
+                OPT_PREDICTIVE_STOP: PREDICTIVE_DEFAULT_ENABLED,
+            },
         )
 
     def _host_already_configured(self, host: str) -> bool:
@@ -200,6 +209,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._options: dict[str, Any] = copy.deepcopy(base_options)
         if CONF_INVERT not in self._options:
             self._options[CONF_INVERT] = DEFAULT_INVERT
+        if OPT_PREDICTIVE_STOP not in self._options:
+            self._options[OPT_PREDICTIVE_STOP] = PREDICTIVE_DEFAULT_ENABLED
         self._calibration_collection: CalibrationCollection = parse_calibration_options(
             self._options
         )
@@ -218,6 +229,32 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         coordinator = entry_data.get(DATA_SHADES_COORDINATOR)
         if isinstance(coordinator, ShadesCoordinator):
             return coordinator
+        return None
+
+    @property
+    def _predictive_runtime(self) -> PredictiveRuntime | None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return None
+        entry_data = domain_data.get(self._config_entry.entry_id)
+        if not entry_data:
+            return None
+        runtime = entry_data.get(DATA_PREDICTIVE_MANAGER)
+        if isinstance(runtime, PredictiveRuntime):
+            return runtime
+        return None
+
+    @property
+    def _predictive_store(self) -> PredictiveStopStore | None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return None
+        entry_data = domain_data.get(self._config_entry.entry_id)
+        if not entry_data:
+            return None
+        store = entry_data.get(DATA_PREDICTIVE_STORAGE)
+        if isinstance(store, PredictiveStopStore):
+            return store
         return None
 
     def _shade_choices(self) -> dict[str, str]:
@@ -330,6 +367,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             menu_options={
                 "global_defaults": "options_menu_global_defaults",
                 "select_shade": "options_menu_select_shade",
+                "predictive_stop": "options_menu_predictive_stop",
+                "reset_learning": "options_menu_reset_learning",
                 "finish": "options_menu_finish",
             },
         )
@@ -358,6 +397,74 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="global_defaults",
             data_schema=data_schema,
+        )
+
+    async def async_step_predictive_stop(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            self._options[OPT_PREDICTIVE_STOP] = bool(user_input[OPT_PREDICTIVE_STOP])
+            return await self.async_step_init()
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(
+                    OPT_PREDICTIVE_STOP,
+                    default=bool(
+                        self._options.get(
+                            OPT_PREDICTIVE_STOP, PREDICTIVE_DEFAULT_ENABLED
+                        )
+                    ),
+                ): bool,
+            }
+        )
+        return self.async_show_form(
+            step_id="predictive_stop",
+            data_schema=data_schema,
+        )
+
+    async def async_step_reset_learning(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        choices = self._shade_choices()
+
+        if user_input is not None:
+            shade_raw = user_input.get("shade")
+            shade_id = self._normalize_shade_id(shade_raw)
+            if not shade_id:
+                errors["base"] = "select_shade"
+            else:
+                store = self._predictive_store
+                if store is not None:
+                    await store.async_clear_shade(shade_id)
+                runtime = self._predictive_runtime
+                if runtime is not None:
+                    runtime.reset_shade(shade_id)
+                return await self.async_step_init()
+
+        if choices:
+            options = [
+                {"value": str(shade_id), "label": str(label)}
+                for shade_id, label in choices.items()
+            ]
+            selector_schema = selector.selector(
+                {
+                    "select": {
+                        "options": options,
+                        "mode": "dropdown",
+                        "custom_value": True,
+                    }
+                }
+            )
+            data_schema = vol.Schema({vol.Required("shade"): selector_schema})
+        else:
+            data_schema = vol.Schema({vol.Required("shade"): str})
+
+        return self.async_show_form(
+            step_id="reset_learning",
+            data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_select_shade(

@@ -37,6 +37,8 @@
         "menu_options": {
           "global_defaults": "Global defaults",
           "select_shade": "Calibrate a shade",
+          "predictive_stop": "Predictive Stop",
+          "reset_learning": "Reset learned parameters",
           "finish": "Save changes"
         }
       },
@@ -75,6 +77,22 @@
           "remove_index": "Select which anchor to remove. The first and last anchors cannot be removed."
         },
         "submit": "Apply"
+      },
+      "predictive_stop": {
+        "title": "Predictive Stop",
+        "description": "Enable or disable predictive stop planning and online learning.",
+        "data": {
+          "predictive_stop": "Enable Predictive Stop (learning)"
+        },
+        "submit": "Save"
+      },
+      "reset_learning": {
+        "title": "Reset learned parameters",
+        "description": "Select a shade to clear its learned speed and latency parameters.",
+        "data": {
+          "shade": "Shade"
+        },
+        "submit": "Reset"
       }
     },
     "error": {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from typing import Any, cast
 
@@ -24,11 +25,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .calibration import CalibrationCollection, pct_to_raw, raw_to_pct
 from .const import (
     DATA_CALIBRATIONS,
+    DATA_PREDICTIVE_STORAGE,
     DATA_WRITE_BATCHER,
     DATA_SHADES_COORDINATOR,
     DOMAIN,
+    PREDICTIVE_STORAGE_VERSION,
 )
 from .coordinator import Shade, ShadesCoordinator
+from .storage import PredictiveStopStore, PredictiveStoreData
 from .write import ShadeWriteBatcher
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,10 +86,15 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
             ShadeWriteBatcher,
             coordinator.hass.data[DOMAIN][entry.entry_id][DATA_WRITE_BATCHER],
         )
+        self._predictive_store = cast(
+            PredictiveStopStore,
+            coordinator.hass.data[DOMAIN][entry.entry_id][DATA_PREDICTIVE_STORAGE],
+        )
         calibration_collection = cast(
             CalibrationCollection,
             coordinator.hass.data[DOMAIN][entry.entry_id][DATA_CALIBRATIONS],
         )
+        self._calibration_collection = calibration_collection
         self._shade_calibration = calibration_collection.for_shade(shade_id)
         self._invert_axis = self._shade_calibration.resolved_invert(
             calibration_collection.global_invert
@@ -202,6 +211,36 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         ).result()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
+        predictive = self.coordinator.predictive
+        if predictive.enabled:
+            shade_ids = predictive.moving_shades()
+            if self._shade_id not in shade_ids:
+                shade_ids.append(self._shade_id)
+            plan = self.coordinator.plan_stop(shade_ids)
+            calibrations = self._calibration_collection
+            commands: list[tuple[str, int]] = []
+            for target in plan.targets:
+                cal = calibrations.for_shade(target.shade_id)
+                invert = cal.resolved_invert(calibrations.global_invert)
+                pct = int(round(max(0.0, min(1.0, target.position)) * 100))
+                raw = pct_to_raw(pct, cal.anchors, invert)
+                commands.append((target.shade_id, raw))
+            if not commands:
+                _LOGGER.debug("Shade %s predictive stop produced no targets", self._shade_id)
+                return
+            for shade_id, raw in commands:
+                await self._write_batcher.enqueue(shade_id, raw)
+            if plan.flush:
+                await self._write_batcher.async_flush()
+            self.coordinator.burst()
+            await self._predictive_store.async_save(
+                PredictiveStoreData(
+                    version=PREDICTIVE_STORAGE_VERSION,
+                    shades=predictive.serialize_learning(),
+                )
+            )
+            return
+
         if (raw := self._resolve_current_raw_position()) is None:
             _LOGGER.debug(
                 "Shade %s stop request skipped because position is unknown",
@@ -219,6 +258,8 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
 
     async def _async_enqueue_position(self, percentage: int) -> None:
         raw = pct_to_raw(percentage, self._shade_calibration.anchors, self._invert_axis)
+        predictive = self.coordinator.predictive
+        predictive.record_command(self._shade_id, time.monotonic())
         await self._write_batcher.enqueue(self._shade_id, raw)
 
     def _resolve_current_raw_position(self) -> int | None:

@@ -112,11 +112,28 @@ selector_module.selector = _selector
 helpers_module.selector = selector_module
 helpers_module.aiohttp_client = aiohttp_client_module
 helpers_module.update_coordinator = update_coordinator_module
+storage_module = types.ModuleType("homeassistant.helpers.storage")
+
+
+class _Store:  # pragma: no cover - minimal async storage stub
+    def __init__(self, *_args, **_kwargs):
+        self._data = None
+
+    async def async_load(self):
+        return self._data
+
+    async def async_save(self, data):
+        self._data = data
+
+
+storage_module.Store = _Store
+helpers_module.storage = storage_module
 homeassistant.helpers = helpers_module
 sys.modules["homeassistant.helpers"] = helpers_module
 sys.modules["homeassistant.helpers.selector"] = selector_module
 sys.modules["homeassistant.helpers.aiohttp_client"] = aiohttp_client_module
 sys.modules["homeassistant.helpers.update_coordinator"] = update_coordinator_module
+sys.modules["homeassistant.helpers.storage"] = storage_module
 
 
 from custom_components.crestron_home.config_flow import (  # noqa: E402

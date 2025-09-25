@@ -80,6 +80,24 @@ Assistant cover entities.
   or `cover.close_cover`; releasing either button calls `cover.stop_cover` so shades coast to a
   stop.
 
+### Predictive Stop with online learning (Milestone 6)
+
+- Predictive Stop replaces the best-effort freeze with an estimator that predicts where a shade will
+  land once transport latency and deceleration are accounted for. When you press STOP, the planner
+  projects each moving shade forward, clamps to avoid any backtracking, and submits a single batched
+  `SetState` call so grouped shades finish together.
+- Every shade maintains a tiny model of steady-state speed and command latency. The learning system
+  blends recursive least squares (speed vs. position) with an exponential moving average of the
+  command response time. Samples are collected from the coordinator's burst polls immediately after
+  any write.
+- Predictive Stop is enabled by default and can be toggled from **Options → Predictive Stop**. When
+  disabled the integration reverts to the Milestone 5A freeze-at-last-poll behavior.
+- Per-shade learned parameters can be cleared from **Options → Reset learned parameters**. This also
+  resets the in-memory estimator so subsequent traversals rebuild a fresh model.
+- Diagnostics now expose the current learning parameters and the last few stop outcomes. Navigate to
+  the integration tile → **... → Diagnostics** to download a JSON snapshot that includes per-shade
+  steady-state speeds, response latency estimates, and recent stop telemetry.
+
 ## Development setup
 
 1. Clone [home-assistant/core](https://github.com/home-assistant/core) next to this repository:
