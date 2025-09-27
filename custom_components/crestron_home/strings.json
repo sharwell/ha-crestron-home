@@ -35,11 +35,11 @@
       "init": {
         "title": "Crestron Home options",
         "menu_options": {
-          "global_defaults": "Global defaults",
-          "select_shade": "Calibrate a shade",
-          "predictive_stop": "Predictive Stop",
-          "reset_learning": "Reset learned parameters",
-          "finish": "Save changes"
+          "options_menu_global_defaults": "Global defaults",
+          "options_menu_select_shade": "Calibrate a shade",
+          "options_menu_predictive_stop": "Predictive Stop",
+          "options_menu_reset_learning": "Reset learned parameters",
+          "options_menu_finish": "Save changes"
         }
       },
       "global_defaults": {
