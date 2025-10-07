@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import re
 from collections import OrderedDict
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -49,9 +50,19 @@ from .const import (
 from .coordinator import Shade, ShadesCoordinator
 from .predictive_stop import PredictiveRuntime
 from .storage import PredictiveStopStore
+from .visual_groups import (
+    VISUAL_GROUPS_VERSION,
+    VisualGroupEntry,
+    VisualGroupsConfig,
+    parse_visual_groups,
+    update_visual_groups_option,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+VISUAL_GROUP_UNASSIGNED = "__unassigned__"
 
 
 class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -214,9 +225,11 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._calibration_collection: CalibrationCollection = parse_calibration_options(
             self._options
         )
+        self._visual_groups: VisualGroupsConfig = parse_visual_groups(self._options)
         self._selected_shade_id: str | None = None
         self._working_anchors: list[dict[str, int]] | None = None
         self._working_invert_override: bool | None = None
+        self._selected_group_id: str | None = None
 
     @property
     def _coordinator(self) -> ShadesCoordinator | None:
@@ -271,6 +284,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 choices[shade_id] = shade_id
         return choices
 
+    def _visual_group_choices(self) -> dict[str, str]:
+        return {
+            group_id: entry.name
+            for group_id, entry in sorted(self._visual_groups.groups.items())
+        }
+
     @staticmethod
     def _selector_value(value: Any) -> Any:
         """Return the actual payload from Home Assistant selector values."""
@@ -295,6 +314,13 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         if candidate is None:
             return ""
 
+        return str(candidate).strip()
+
+    @staticmethod
+    def _normalize_group_id(value: Any) -> str:
+        candidate = CrestronHomeOptionsFlowHandler._selector_value(value)
+        if candidate is None:
+            return ""
         return str(candidate).strip()
 
     @staticmethod
@@ -359,6 +385,21 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             )
         return anchors
 
+    def _generate_group_id(self, name: str) -> str:
+        base = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+        if not base:
+            base = "group"
+        candidate = base
+        suffix = 1
+        while candidate in self._visual_groups.groups:
+            suffix += 1
+            candidate = f"{base}_{suffix}"
+        return candidate
+
+    def _save_visual_groups(self) -> None:
+        self._visual_groups.version = VISUAL_GROUPS_VERSION
+        update_visual_groups_option(self._options, self._visual_groups)
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -367,6 +408,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             menu_options={
                 "global_defaults": "options_menu_global_defaults",
                 "select_shade": "options_menu_select_shade",
+                "visual_groups": "options_menu_visual_groups",
                 "predictive_stop": "options_menu_predictive_stop",
                 "reset_learning": "options_menu_reset_learning",
                 "finish": "options_menu_finish",
@@ -397,6 +439,212 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="global_defaults",
             data_schema=data_schema,
+        )
+
+    async def async_step_visual_groups(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        self._selected_group_id = None
+        menu = OrderedDict[str, str]()
+        menu["visual_groups_create"] = "options_menu_visual_groups_create"
+        if self._visual_groups.groups:
+            menu["visual_groups_rename_select"] = "options_menu_visual_groups_rename"
+            menu["visual_groups_delete_select"] = "options_menu_visual_groups_delete"
+        menu["visual_groups_assign"] = "options_menu_visual_groups_assign"
+        menu["visual_groups_back"] = "options_menu_visual_groups_back"
+        return self.async_show_menu(step_id="visual_groups", menu_options=menu)
+
+    async def async_step_visual_groups_back(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        return await self.async_step_init()
+
+    async def async_step_visual_groups_create(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get("name", "")).strip()
+            if not name:
+                errors["name"] = "invalid_group_name"
+            else:
+                group_id = self._generate_group_id(name)
+                self._visual_groups.groups[group_id] = VisualGroupEntry(name=name)
+                self._save_visual_groups()
+                return await self.async_step_visual_groups()
+
+        data_schema = vol.Schema({vol.Required("name", default=""): str})
+        return self.async_show_form(
+            step_id="visual_groups_create",
+            data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_visual_groups_rename_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if not self._visual_groups.groups:
+            return await self.async_step_visual_groups()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            group_id = self._normalize_group_id(user_input.get("group"))
+            if group_id and group_id in self._visual_groups.groups:
+                self._selected_group_id = group_id
+                return await self.async_step_visual_groups_rename()
+            errors["group"] = "invalid_group"
+
+        options = [
+            {"label": name, "value": group_id}
+            for group_id, name in self._visual_group_choices().items()
+        ]
+        data_schema = vol.Schema(
+            {
+                vol.Required("group"): selector.selector(
+                    {"select": {"options": options}}
+                )
+            }
+        )
+        return self.async_show_form(
+            step_id="visual_groups_rename_select",
+            data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_visual_groups_rename(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        group_id = self._selected_group_id
+        if not group_id or group_id not in self._visual_groups.groups:
+            return await self.async_step_visual_groups()
+
+        errors: dict[str, str] = {}
+        current_name = self._visual_groups.groups[group_id].name
+        if user_input is not None:
+            name = str(user_input.get("name", "")).strip()
+            if not name:
+                errors["name"] = "invalid_group_name"
+            else:
+                self._visual_groups.groups[group_id] = VisualGroupEntry(name=name)
+                self._save_visual_groups()
+                self._selected_group_id = None
+                return await self.async_step_visual_groups()
+
+        data_schema = vol.Schema({vol.Required("name", default=current_name): str})
+        return self.async_show_form(
+            step_id="visual_groups_rename",
+            data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_visual_groups_delete_select(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if not self._visual_groups.groups:
+            return await self.async_step_visual_groups()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            group_id = self._normalize_group_id(user_input.get("group"))
+            if group_id and group_id in self._visual_groups.groups:
+                self._selected_group_id = group_id
+                return await self.async_step_visual_groups_delete_confirm()
+            errors["group"] = "invalid_group"
+
+        options = [
+            {"label": name, "value": group_id}
+            for group_id, name in self._visual_group_choices().items()
+        ]
+        data_schema = vol.Schema(
+            {
+                vol.Required("group"): selector.selector(
+                    {"select": {"options": options}}
+                )
+            }
+        )
+        return self.async_show_form(
+            step_id="visual_groups_delete_select",
+            data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_visual_groups_delete_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        group_id = self._selected_group_id
+        if not group_id or group_id not in self._visual_groups.groups:
+            return await self.async_step_visual_groups()
+
+        if user_input is not None:
+            if user_input.get("confirm"):
+                self._visual_groups.groups.pop(group_id, None)
+                self._visual_groups.membership = {
+                    shade_id: assigned
+                    for shade_id, assigned in self._visual_groups.membership.items()
+                    if assigned != group_id
+                }
+                self._save_visual_groups()
+            self._selected_group_id = None
+            return await self.async_step_visual_groups()
+
+        data_schema = vol.Schema({vol.Required("confirm", default=False): bool})
+        return self.async_show_form(
+            step_id="visual_groups_delete_confirm",
+            data_schema=data_schema,
+            description_placeholders={"group": self._visual_groups.groups[group_id].name},
+        )
+
+    async def async_step_visual_groups_assign(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        shade_labels = self._shade_choices()
+        known_shades = sorted(set(shade_labels).union(self._visual_groups.membership))
+
+        if not known_shades:
+            return await self.async_step_visual_groups()
+
+        group_options = [
+            {"label": name, "value": group_id}
+            for group_id, name in self._visual_group_choices().items()
+        ]
+        group_options.sort(key=lambda item: item["label"].lower())
+        group_options.insert(0, {"label": "Unassigned", "value": VISUAL_GROUP_UNASSIGNED})
+
+        schema_dict: dict[Any, Any] = {}
+        for shade_id in known_shades:
+            default = self._visual_groups.membership.get(shade_id, VISUAL_GROUP_UNASSIGNED)
+            if default not in self._visual_groups.groups:
+                default = VISUAL_GROUP_UNASSIGNED
+            schema_dict[
+                vol.Required(f"shade::{shade_id}", default=default)
+            ] = selector.selector({"select": {"options": group_options}})
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            new_membership: dict[str, str] = {}
+            invalid = False
+            for shade_id in known_shades:
+                key = f"shade::{shade_id}"
+                selected = self._normalize_group_id(user_input.get(key))
+                if not selected or selected == VISUAL_GROUP_UNASSIGNED:
+                    continue
+                if selected not in self._visual_groups.groups:
+                    invalid = True
+                    continue
+                new_membership[shade_id] = selected
+
+            if invalid:
+                errors["base"] = "invalid_group"
+            else:
+                self._visual_groups.membership = new_membership
+                self._save_visual_groups()
+                return await self.async_step_visual_groups()
+
+        data_schema = vol.Schema(schema_dict)
+        return self.async_show_form(
+            step_id="visual_groups_assign",
+            data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_predictive_stop(

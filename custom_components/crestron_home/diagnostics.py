@@ -13,6 +13,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import ShadesCoordinator
+from .visual_groups import VisualGroupsConfig
 from .predictive_stop import PredictiveRuntime
 from .storage import PredictiveStopStore
 
@@ -36,6 +37,12 @@ async def async_get_config_entry_diagnostics(
     if store is not None:
         stored = await store.async_load()
         payload["stored_learning"] = stored.shades
+
+    if coordinator is not None:
+        visual_groups: VisualGroupsConfig = coordinator.visual_groups
+        payload["visual_groups"] = visual_groups.diagnostics()
+        payload["plan_events"] = coordinator.plan_history
+        payload["flush_events"] = coordinator.flush_history
 
     if coordinator is not None and coordinator.data:
         payload["shades"] = {

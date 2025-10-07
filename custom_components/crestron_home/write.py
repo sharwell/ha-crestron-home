@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -42,6 +42,7 @@ class ShadeWriteBatcher:
         debounce_ms: int = BATCH_DEBOUNCE_MS,
         max_items: int = BATCH_MAX_ITEMS,
         on_success: Callable[[], None] | None = None,
+        on_flush: Callable[[Sequence[dict[str, int]], str | None], None] | None = None,
     ) -> None:
         self._hass = hass
         self._client = client
@@ -54,6 +55,7 @@ class ShadeWriteBatcher:
         self._flush_task: asyncio.Task[None] | None = None
         self._closed = False
         self._on_success = on_success
+        self._on_flush = on_flush
 
     async def enqueue(self, shade_id: str, position: int) -> None:
         """Enqueue a shade write request and wait for completion."""
@@ -124,20 +126,31 @@ class ShadeWriteBatcher:
 
         ids = [item.shade_id for item in queued_items.values()]
 
+        status: str | None = None
         try:
             response = await self._client.async_set_shade_positions(payload_items)
+            status = response.status
         except ShadeCommandFailedError as err:
+            status = "error"
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
             raise error from err
         except CrestronHomeApiError as err:
+            status = "error"
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
             raise error from err
         except Exception as err:  # pragma: no cover - defensive safeguard
+            status = "error"
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
             raise error from err
+        finally:
+            if self._on_flush is not None:
+                try:
+                    self._on_flush(payload_items, status)
+                except Exception:  # pragma: no cover - defensive safeguard
+                    _LOGGER.exception("Unhandled exception from flush callback")
 
         status = response.status
         _LOGGER.debug(

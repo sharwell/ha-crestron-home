@@ -418,7 +418,7 @@ class PredictiveRuntime:
 
     def reset_shade(self, shade_id: str) -> None:
         if shade_id in self._states:
-            state = self._states.pop(shade_id)
+            self._states.pop(shade_id)
             self._learning.states.pop(shade_id, None)
             # Recreate state with defaults
         self.get_state(shade_id)
