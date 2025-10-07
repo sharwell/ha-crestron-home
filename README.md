@@ -61,18 +61,6 @@ Assistant cover entities.
   service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
   different raw targets while reaching a visually matching opening.
 
-### Visual groups (Milestone 7)
-
-- Shades can be arranged into **Visual groups** from **Options → Visual groups**. Groups provide a
-  lightweight way to describe which windows should finish together when predictive stops or grouped
-  scenes run.
-- With no explicit groups configured the integration maintains the existing behavior: all shades are
-  treated as a single cohort for alignment and batching decisions.
-- After you create one or more groups, only shades assigned to the same group align with one
-  another. Unassigned shades behave independently so accidental cross-room coupling is avoided.
-- Diagnostics list the configured groups, per-shade membership, and recent plan/flush events tagged
-  with the group identifier for easier troubleshooting.
-
 ### Hold-to-move stop (Milestone 5A)
 
 - Shade entities now advertise the `stop_cover` service. Because the REST API does not expose a
@@ -111,6 +99,18 @@ Assistant cover entities.
   few stop outcomes. Navigate to the integration tile → **... → Diagnostics** to download a JSON
   snapshot that includes per-shade steady-state speeds, response latency estimates, recent stop
   telemetry, and the grouped plan/flush history recorded by the coordinator.
+
+### Visual groups (Milestone 7)
+
+- Shades can be arranged into **Visual groups** from **Options → Visual groups**. Groups provide a
+  lightweight way to describe which windows should finish together when predictive stops or grouped
+  scenes run.
+- With no explicit groups configured the integration maintains the existing behavior: all shades are
+  treated as a single cohort for alignment and batching decisions.
+- After you create one or more groups, only shades assigned to the same group align with one
+  another. Unassigned shades behave independently so accidental cross-room coupling is avoided.
+- Diagnostics list the configured groups, per-shade membership, and recent plan/flush events tagged
+  with the group identifier for easier troubleshooting.
 
 ## Development setup
 
