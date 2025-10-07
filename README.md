@@ -61,7 +61,7 @@ Assistant cover entities.
   service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
   different raw targets while reaching a visually matching opening.
 
-### Visual groups (Milestone 6)
+### Visual groups (Milestone 7)
 
 - Shades can be arranged into **Visual groups** from **Options → Visual groups**. Groups provide a
   lightweight way to describe which windows should finish together when predictive stops or grouped
