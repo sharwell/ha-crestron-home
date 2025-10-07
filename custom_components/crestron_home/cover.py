@@ -216,22 +216,30 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
             shade_ids = predictive.moving_shades()
             if self._shade_id not in shade_ids:
                 shade_ids.append(self._shade_id)
-            plan = self.coordinator.plan_stop(shade_ids)
             calibrations = self._calibration_collection
-            commands: list[tuple[str, int]] = []
-            for target in plan.targets:
-                cal = calibrations.for_shade(target.shade_id)
-                invert = cal.resolved_invert(calibrations.global_invert)
-                pct = int(round(max(0.0, min(1.0, target.position)) * 100))
-                raw = pct_to_raw(pct, cal.anchors, invert)
-                commands.append((target.shade_id, raw))
-            if not commands:
+            group_plans = self.coordinator.plan_stop(shade_ids)
+            any_commands = False
+            for group_plan in group_plans:
+                commands: list[tuple[str, int]] = []
+                group_members = set(group_plan.shade_ids)
+                for target in group_plan.plan.targets:
+                    if target.shade_id not in group_members:
+                        continue
+                    cal = calibrations.for_shade(target.shade_id)
+                    invert = cal.resolved_invert(calibrations.global_invert)
+                    pct = int(round(max(0.0, min(1.0, target.position)) * 100))
+                    raw = pct_to_raw(pct, cal.anchors, invert)
+                    commands.append((target.shade_id, raw))
+                if not commands:
+                    continue
+                any_commands = True
+                for shade_id, raw in commands:
+                    await self._write_batcher.enqueue(shade_id, raw)
+                if group_plan.plan.flush:
+                    await self._write_batcher.async_flush()
+            if not any_commands:
                 _LOGGER.debug("Shade %s predictive stop produced no targets", self._shade_id)
                 return
-            for shade_id, raw in commands:
-                await self._write_batcher.enqueue(shade_id, raw)
-            if plan.flush:
-                await self._write_batcher.async_flush()
             self.coordinator.burst()
             await self._predictive_store.async_save(
                 PredictiveStoreData(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
@@ -25,8 +26,9 @@ from .const import (
     SHADE_POSITION_MAX,
 )
 from .predictive_stop import PlanResult, PredictiveRuntime
+from .visual_groups import VisualGroupsConfig, log_invalid_groups
 
-__all__ = ["Shade", "ShadesCoordinator"]
+__all__ = ["Shade", "ShadesCoordinator", "StopPlanGroup"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +110,13 @@ class Shade:
         return _is_connected(self.connection_status)
 
 
+@dataclass
+class StopPlanGroup:
+    group_id: str
+    shade_ids: list[str]
+    plan: PlanResult
+
+
 class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
     """Coordinate shade state updates from the Crestron Home controller."""
 
@@ -118,6 +127,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         entry: ConfigEntry,
         predictive: PredictiveRuntime,
         calibrations: CalibrationCollection,
+        visual_groups: VisualGroupsConfig,
     ) -> None:
         super().__init__(
             hass,
@@ -135,6 +145,9 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         self._last_payload: list[Any] = []
         self._predictive = predictive
         self._calibrations = calibrations
+        self._visual_groups = visual_groups
+        self._plan_history: deque[dict[str, Any]] = deque(maxlen=20)
+        self._flush_history: deque[dict[str, Any]] = deque(maxlen=20)
 
     @property
     def client(self) -> ApiClient:
@@ -271,6 +284,77 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
     def predictive(self) -> PredictiveRuntime:
         return self._predictive
 
-    def plan_stop(self, shade_ids: Sequence[str]) -> PlanResult:
+    @property
+    def visual_groups(self) -> VisualGroupsConfig:
+        return self._visual_groups
+
+    @property
+    def plan_history(self) -> list[dict[str, Any]]:
+        return list(self._plan_history)
+
+    @property
+    def flush_history(self) -> list[dict[str, Any]]:
+        return list(self._flush_history)
+
+    def plan_stop(self, shade_ids: Sequence[str]) -> list[StopPlanGroup]:
         now = time.monotonic()
-        return self._predictive.plan_stop(shade_ids, timestamp=now)
+        partitions, invalid = self._visual_groups.partition_shades(list(shade_ids))
+        if invalid:
+            log_invalid_groups(invalid)
+
+        groups: list[StopPlanGroup] = []
+        for group_id, members in partitions.items():
+            plan = self._predictive.plan_stop(members, timestamp=now)
+            self._record_plan_event(group_id, members, plan)
+            groups.append(
+                StopPlanGroup(group_id=group_id, shade_ids=list(members), plan=plan)
+            )
+
+        return groups
+
+    def handle_write_flush(self, items: Sequence[dict[str, Any]], status: str | None) -> None:
+        shade_ids = [item.get("id") for item in items if isinstance(item, dict)]
+        partitions, invalid = self._visual_groups.partition_shades(
+            [shade_id for shade_id in shade_ids if shade_id]
+        )
+        if invalid:
+            log_invalid_groups(invalid)
+
+        entry = {
+            "timestamp": utcnow().isoformat(),
+            "status": status,
+            "count": len(items),
+            "items": list(items),
+            "groups": [
+                {
+                    "group_id": group_id,
+                    "group_name": self._visual_groups.group_name(
+                        group_id, shade_ids=members
+                    ),
+                    "shade_ids": list(members),
+                }
+                for group_id, members in partitions.items()
+            ],
+        }
+        self._flush_history.append(entry)
+
+    def _record_plan_event(
+        self, group_id: str, shade_ids: Sequence[str], plan: PlanResult
+    ) -> None:
+        entry = {
+            "timestamp": utcnow().isoformat(),
+            "group_id": group_id,
+            "group_name": self._visual_groups.group_name(group_id, shade_ids=shade_ids),
+            "shade_ids": list(shade_ids),
+            "targets": [
+                {
+                    "shade_id": target.shade_id,
+                    "position": target.position,
+                    "clamped": target.clamped,
+                    "distance": target.distance,
+                }
+                for target in plan.targets
+            ],
+            "flush": plan.flush,
+        }
+        self._plan_history.append(entry)

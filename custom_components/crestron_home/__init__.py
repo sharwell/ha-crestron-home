@@ -36,6 +36,7 @@ from .coordinator import ShadesCoordinator
 from .learning import LearningManager
 from .predictive_stop import PredictiveRuntime
 from .storage import PredictiveStopStore, PredictiveStoreData
+from .visual_groups import parse_visual_groups
 from .write import ShadeWriteBatcher
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     predictive_runtime.enabled = entry.options.get(OPT_PREDICTIVE_STOP, PREDICTIVE_DEFAULT_ENABLED)
 
     calibrations = parse_calibration_options(entry.options)
+    visual_groups = parse_visual_groups(entry.options)
 
     coordinator = ShadesCoordinator(
         hass,
@@ -88,6 +90,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry,
         predictive_runtime,
         calibrations,
+        visual_groups,
     )
     await coordinator.async_config_entry_first_refresh()
 
@@ -95,6 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass,
         client,
         on_success=lambda: coordinator.bump_fast_poll(),
+        on_flush=coordinator.handle_write_flush,
     )
 
     hass.data[DOMAIN][entry.entry_id] = {

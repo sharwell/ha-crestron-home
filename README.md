@@ -84,8 +84,9 @@ Assistant cover entities.
 
 - Predictive Stop replaces the best-effort freeze with an estimator that predicts where a shade will
   land once transport latency and deceleration are accounted for. When you press STOP, the planner
-  projects each moving shade forward, clamps to avoid any backtracking, and submits a single batched
-  `SetState` call so grouped shades finish together.
+  projects each moving shade forward, clamps to avoid any backtracking, and submits a batched
+  `SetState` call so grouped shades within the same visual group finish together without coupling
+  to other groups.
 - Every shade maintains a tiny model of steady-state speed and command latency. The learning system
   blends recursive least squares (speed vs. position) with an exponential moving average of the
   command response time. Samples are collected from the coordinator's burst polls immediately after
@@ -94,9 +95,22 @@ Assistant cover entities.
   disabled the integration reverts to the Milestone 5A freeze-at-last-poll behavior.
 - Per-shade learned parameters can be cleared from **Options → Reset learned parameters**. This also
   resets the in-memory estimator so subsequent traversals rebuild a fresh model.
-- Diagnostics now expose the current learning parameters and the last few stop outcomes. Navigate to
-  the integration tile → **... → Diagnostics** to download a JSON snapshot that includes per-shade
-  steady-state speeds, response latency estimates, and recent stop telemetry.
+- Diagnostics now expose the current learning parameters, visual group configuration, and the last
+  few stop outcomes. Navigate to the integration tile → **... → Diagnostics** to download a JSON
+  snapshot that includes per-shade steady-state speeds, response latency estimates, recent stop
+  telemetry, and the grouped plan/flush history recorded by the coordinator.
+
+### Visual groups (Milestone 7)
+
+- Shades can be arranged into **Visual groups** from **Options → Visual groups**. Groups provide a
+  lightweight way to describe which windows should finish together when predictive stops or grouped
+  scenes run.
+- With no explicit groups configured the integration maintains the existing behavior: all shades are
+  treated as a single cohort for alignment and batching decisions.
+- After you create one or more groups, only shades assigned to the same group align with one
+  another. Unassigned shades behave independently so accidental cross-room coupling is avoided.
+- Diagnostics list the configured groups, per-shade membership, and recent plan/flush events tagged
+  with the group identifier for easier troubleshooting.
 
 ## Development setup
 

@@ -135,3 +135,65 @@ def test_batcher_partial_failure_propagates() -> None:
         assert "shade-2" in str(results[1])
 
     asyncio.run(_async_test())
+
+
+def test_batcher_flush_callback_receives_payload() -> None:
+    """Flush callbacks should receive the payload and final status."""
+
+    async def _async_test() -> None:
+        loop = asyncio.get_running_loop()
+        hass = FakeHass(loop)
+        flush_calls: list[tuple[list[dict[str, int]], str | None]] = []
+
+        class _Client:
+            async def async_set_shade_positions(self, items, *, retry: bool = True):
+                return ShadeCommandResponse(status="success", results={})
+
+        def _on_flush(items, status):
+            flush_calls.append((list(items), status))
+
+        batcher = ShadeWriteBatcher(
+            hass,
+            _Client(),
+            debounce_ms=0,
+            on_flush=_on_flush,
+        )
+
+        await batcher.enqueue("shade-1", 1234)
+        await batcher.async_flush()
+
+        assert flush_calls
+        payload, status = flush_calls[0]
+        assert payload == [{"id": "shade-1", "position": 1234}]
+        assert status == "success"
+
+    asyncio.run(_async_test())
+
+
+def test_batcher_splits_large_payload() -> None:
+    """Batches larger than the controller limit should split into multiple posts."""
+
+    async def _async_test() -> None:
+        loop = asyncio.get_running_loop()
+        hass = FakeHass(loop)
+        calls: list[list[dict[str, int]]] = []
+
+        class _Client:
+            async def async_set_shade_positions(self, items, *, retry: bool = True):
+                calls.append(list(items))
+                return ShadeCommandResponse(status="success", results={})
+
+        batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
+
+        for index in range(20):
+            await batcher.enqueue(f"shade-{index}", index)
+        await asyncio.sleep(0.2)
+        await batcher.async_flush()
+
+        assert len(calls) >= 2
+        assert all(len(call) <= 16 for call in calls)
+        all_ids = [item["id"] for call in calls for item in call]
+        assert all_ids.count("shade-0") == 1
+        assert all_ids.count("shade-19") == 1
+
+    asyncio.run(_async_test())
