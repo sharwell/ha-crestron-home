@@ -6,7 +6,8 @@ import copy
 import logging
 import re
 from collections import OrderedDict
-from typing import Any, Mapping
+from datetime import datetime, timezone
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 import voluptuous as vol
@@ -17,6 +18,7 @@ from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
+from homeassistant.exceptions import HomeAssistantError
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError, InvalidAuthError
 from .calibration import (
@@ -25,6 +27,8 @@ from .calibration import (
     InvalidCalibrationError,
     ShadeCalibration,
     parse_calibration_options,
+    pct_to_raw,
+    raw_to_pct,
     remove_calibration_option,
     update_calibration_option,
     validate_anchors,
@@ -40,6 +44,7 @@ from .const import (
     DATA_PREDICTIVE_MANAGER,
     DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
+    DATA_WRITE_BATCHER,
     DEFAULT_INVERT,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
@@ -57,6 +62,12 @@ from .visual_groups import (
     parse_visual_groups,
     update_visual_groups_option,
 )
+from .assisted_calibration import (
+    AssistedCalibrationRun,
+    apply_assisted_anchor,
+    largest_gap_target,
+)
+from .write import ShadeWriteBatcher
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -230,6 +241,16 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._working_anchors: list[dict[str, int]] | None = None
         self._working_invert_override: bool | None = None
         self._selected_group_id: str | None = None
+        self._assisted_group_id: str | None = None
+        self._assisted_members: list[str] = []
+        self._assisted_target_percent: int | None = None
+        self._assisted_use_current_position = False
+        self._assisted_stage_sent = False
+        self._assisted_stage_warnings: list[str] = []
+        self._assisted_active_members: list[str] = []
+        self._assisted_feedback: dict[str, object] | None = None
+        self._assisted_snapshot: dict[str, tuple[ShadeCalibration, bool]] | None = None
+        self._assisted_last_run: AssistedCalibrationRun | None = None
 
     @property
     def _coordinator(self) -> ShadesCoordinator | None:
@@ -242,6 +263,19 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         coordinator = entry_data.get(DATA_SHADES_COORDINATOR)
         if isinstance(coordinator, ShadesCoordinator):
             return coordinator
+        return None
+
+    @property
+    def _write_batcher(self) -> ShadeWriteBatcher | None:
+        domain_data = self.hass.data.get(DOMAIN)
+        if not domain_data:
+            return None
+        entry_data = domain_data.get(self._config_entry.entry_id)
+        if not entry_data:
+            return None
+        batcher = entry_data.get(DATA_WRITE_BATCHER)
+        if isinstance(batcher, ShadeWriteBatcher):
+            return batcher
         return None
 
     @property
@@ -408,6 +442,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             menu_options={
                 "global_defaults": "options_menu_global_defaults",
                 "select_shade": "options_menu_select_shade",
+                "assisted_calibration": "options_menu_assisted_calibration",
                 "visual_groups": "options_menu_visual_groups",
                 "predictive_stop": "options_menu_predictive_stop",
                 "reset_learning": "options_menu_reset_learning",
@@ -715,6 +750,249 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             errors=errors,
         )
 
+    async def async_step_assisted_calibration(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        return await self.async_step_assisted_calibration_select_group(user_input)
+
+    async def async_step_assisted_calibration_select_group(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        status = ""
+
+        if self._assisted_feedback:
+            status = self._assisted_feedback.get("status", "") or ""
+            self._assisted_feedback = None
+
+        if user_input is not None:
+            action_raw = user_input.get("action")
+            action = str(self._selector_value(action_raw or "start")).strip().lower()
+            if action == "back":
+                self._assisted_reset()
+                return await self.async_step_init()
+            if action == "undo":
+                if self._assisted_last_run and self._assisted_snapshot:
+                    self._assisted_restore_snapshot()
+                    status = self._assisted_status_text(
+                        "Assisted calibration undo applied",
+                        saved=self._assisted_last_run.saved,
+                        skipped=self._assisted_last_run.skipped,
+                    )
+                    self._assisted_last_run = None
+                else:
+                    errors["base"] = "assisted_no_undo"
+            else:
+                group_raw = user_input.get("group")
+                group_id = self._normalize_group_id(group_raw)
+                if not group_id:
+                    errors["group"] = "invalid_group"
+                elif group_id not in self._visual_groups.groups:
+                    errors["group"] = "invalid_group"
+                else:
+                    if not self._assisted_prepare_group(group_id):
+                        errors["group"] = "assisted_empty_group"
+                    else:
+                        return await self.async_step_assisted_calibration_target()
+
+        group_options = []
+        for group_id, entry in sorted(self._visual_groups.groups.items()):
+            members = self._assisted_group_members(group_id)
+            if not members:
+                continue
+            label = f"{entry.name} ({len(members)})"
+            group_options.append({"value": group_id, "label": label})
+
+        schema_dict: OrderedDict[Any, Any] = OrderedDict()
+        if group_options:
+            schema_dict[vol.Required("group")] = selector.selector(
+                {"select": {"options": group_options}}
+            )
+        else:
+            status = status or "No visual groups are configured."
+
+        action_options = [
+            {"value": "start", "label": "Start"},
+            {"value": "undo", "label": "Undo last"},
+            {"value": "back", "label": "Back"},
+        ]
+        schema_dict[vol.Required("action", default="start")] = selector.selector(
+            {"select": {"options": action_options, "mode": "dropdown"}}
+        )
+
+        data_schema = vol.Schema(schema_dict)
+
+        if not status:
+            status = "Select a visual group to begin."
+
+        return self.async_show_form(
+            step_id="assisted_calibration_select_group",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "status": status,
+            },
+        )
+
+    async def async_step_assisted_calibration_target(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if not self._assisted_group_id:
+            return await self.async_step_assisted_calibration_select_group()
+
+        errors: dict[str, str] = {}
+        status = ""
+
+        if self._assisted_feedback:
+            status = self._assisted_feedback.get("status", "") or ""
+            self._assisted_feedback = None
+
+        if user_input is not None:
+            action_raw = user_input.get("action")
+            action = str(self._selector_value(action_raw or "stage")).strip().lower()
+            if action == "back":
+                self._assisted_reset()
+                return await self.async_step_assisted_calibration_select_group()
+
+            mode_raw = user_input.get("mode")
+            mode = str(self._selector_value(mode_raw or "automatic")).strip().lower()
+            target_raw = user_input.get("target_percent")
+            try:
+                target = int(target_raw)
+            except (TypeError, ValueError):
+                errors["target_percent"] = "anchors_pc_range"
+                target = self._assisted_target_percent or 50
+            else:
+                if target < CAL_ANCHOR_PC_MIN or target > CAL_ANCHOR_PC_MAX:
+                    errors["target_percent"] = "anchors_pc_range"
+            if not errors:
+                self._assisted_target_percent = max(
+                    CAL_ANCHOR_PC_MIN, min(CAL_ANCHOR_PC_MAX, target)
+                )
+                self._assisted_use_current_position = mode == "current"
+                self._assisted_stage_sent = False
+                return await self.async_step_assisted_calibration_stage()
+
+        if self._assisted_target_percent is None:
+            calibrations = [
+                self._calibration_collection.for_shade(shade_id)
+                for shade_id in self._assisted_members
+            ]
+            self._assisted_target_percent = largest_gap_target(calibrations)
+
+        mode_options = [
+            {"value": "automatic", "label": "Automatic"},
+            {"value": "current", "label": "From current location"},
+        ]
+        schema_dict: OrderedDict[Any, Any] = OrderedDict()
+        schema_dict[vol.Required("mode", default="automatic")] = selector.selector(
+            {"select": {"options": mode_options, "mode": "dropdown"}}
+        )
+        schema_dict[vol.Required(
+            "target_percent", default=self._assisted_target_percent
+        )] = vol.All(
+            vol.Coerce(int),
+            vol.Range(min=CAL_ANCHOR_PC_MIN, max=CAL_ANCHOR_PC_MAX),
+        )
+        schema_dict[vol.Required("action", default="stage")] = selector.selector(
+            {"select": {"options": [{"value": "stage", "label": "Continue"}, {"value": "back", "label": "Change group"}]}}
+        )
+
+        data_schema = vol.Schema(schema_dict)
+
+        members_label = ", ".join(self._assisted_member_labels(self._assisted_members))
+        group_name = self._visual_groups.group_name(
+            self._assisted_group_id, shade_ids=self._assisted_members
+        )
+
+        return self.async_show_form(
+            step_id="assisted_calibration_target",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "group": group_name,
+                "members": members_label,
+                "status": status,
+            },
+        )
+
+    async def async_step_assisted_calibration_stage(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if not self._assisted_group_id or self._assisted_target_percent is None:
+            return await self.async_step_assisted_calibration_select_group()
+
+        errors: dict[str, str] = {}
+
+        if not self._assisted_stage_sent:
+            try:
+                await self._assisted_perform_stage()
+            except HomeAssistantError as err:
+                errors["base"] = "assisted_stage_failed"
+                self._assisted_feedback = {
+                    "status": str(err),
+                }
+
+        if user_input is not None:
+            action_raw = user_input.get("action")
+            action = str(self._selector_value(action_raw or "record")).strip().lower()
+            if action == "target":
+                return await self.async_step_assisted_calibration_target()
+            if action == "cancel":
+                self._assisted_reset()
+                return await self.async_step_assisted_calibration_select_group()
+            if action == "restage":
+                self._assisted_stage_sent = False
+                return await self.async_step_assisted_calibration_stage()
+            if action == "record":
+                try:
+                    saved, skipped = await self._assisted_record()
+                except InvalidCalibrationError as err:
+                    errors["base"] = err.code
+                else:
+                    status = self._assisted_status_text(
+                        "Recorded calibration",
+                        saved=saved,
+                        skipped=skipped,
+                    )
+                    self._assisted_feedback = {"status": status}
+                    self._assisted_stage_sent = False
+                    return await self.async_step_assisted_calibration_target()
+
+        members_label = ", ".join(self._assisted_member_labels(self._assisted_members))
+        warnings = ", ".join(self._assisted_stage_warnings)
+        positions = ", ".join(self._assisted_stage_positions())
+
+        action_options = [
+            {"value": "record", "label": "Record anchors"},
+            {"value": "restage", "label": "Stage again"},
+            {"value": "target", "label": "Pick new target"},
+            {"value": "cancel", "label": "Back to groups"},
+        ]
+
+        data_schema = vol.Schema(
+            {
+                vol.Required("action", default="record"): selector.selector(
+                    {"select": {"options": action_options, "mode": "dropdown"}}
+                )
+            }
+        )
+
+        return self.async_show_form(
+            step_id="assisted_calibration_stage",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "group": self._visual_groups.group_name(
+                    self._assisted_group_id, shade_ids=self._assisted_members
+                ),
+                "members": members_label,
+                "warnings": warnings,
+                "positions": positions,
+                "target": str(self._assisted_target_percent),
+            },
+        )
+
     async def async_step_select_shade(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -761,6 +1039,216 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=data_schema,
             errors=errors,
         )
+
+    def _assisted_reset(self) -> None:
+        self._assisted_group_id = None
+        self._assisted_members = []
+        self._assisted_target_percent = None
+        self._assisted_use_current_position = False
+        self._assisted_stage_sent = False
+        self._assisted_stage_warnings = []
+        self._assisted_active_members = []
+
+    def _assisted_group_members(self, group_id: str) -> list[str]:
+        members = [
+            shade_id
+            for shade_id, assigned in self._visual_groups.membership.items()
+            if assigned == group_id
+        ]
+        members.sort()
+        return members
+
+    def _assisted_prepare_group(self, group_id: str) -> bool:
+        members = self._assisted_group_members(group_id)
+        if not members:
+            return False
+        self._assisted_group_id = group_id
+        self._assisted_members = members
+        calibrations = [
+            self._calibration_collection.for_shade(shade_id)
+            for shade_id in members
+        ]
+        self._assisted_target_percent = largest_gap_target(calibrations)
+        self._assisted_use_current_position = False
+        self._assisted_stage_sent = False
+        self._assisted_stage_warnings = []
+        self._assisted_active_members = []
+        return True
+
+    def _assisted_member_labels(self, members: Sequence[str]) -> list[str]:
+        labels: list[str] = []
+        coordinator = self._coordinator
+        data = coordinator.data if coordinator and coordinator.data else {}
+        for shade_id in members:
+            label = shade_id
+            shade = data.get(shade_id) if isinstance(data, Mapping) else None
+            if isinstance(shade, Shade) and shade.name:
+                if shade.name == shade_id:
+                    label = shade.name
+                else:
+                    label = f"{shade.name} ({shade_id})"
+            labels.append(label)
+        return labels
+
+    def _assisted_status_text(
+        self, prefix: str, *, saved: Sequence[str], skipped: Sequence[str]
+    ) -> str:
+        parts = [prefix]
+        if saved:
+            parts.append(
+                "saved " + ", ".join(self._assisted_member_labels(saved))
+            )
+        if skipped:
+            parts.append(
+                "skipped " + ", ".join(self._assisted_member_labels(skipped))
+            )
+        return "; ".join(parts)
+
+    async def _assisted_perform_stage(self) -> None:
+        coordinator = self._coordinator
+        self._assisted_stage_warnings = []
+        self._assisted_active_members = []
+        if coordinator is None:
+            self._assisted_stage_warnings.append("Controller unavailable")
+            self._assisted_stage_sent = True
+            return
+
+        data = coordinator.data or {}
+        available: list[str] = []
+        for shade_id in self._assisted_members:
+            shade = data.get(shade_id)
+            if not isinstance(shade, Shade):
+                label = self._assisted_member_labels([shade_id])[0]
+                self._assisted_stage_warnings.append(f"{label}: unavailable")
+                continue
+            if not shade.is_connected:
+                label = self._assisted_member_labels([shade_id])[0]
+                self._assisted_stage_warnings.append(f"{label}: offline")
+                continue
+            available.append(shade_id)
+
+        self._assisted_active_members = available
+        self._assisted_stage_sent = True
+
+        if self._assisted_use_current_position or not available:
+            return
+
+        batcher = self._write_batcher
+        if batcher is None:
+            self._assisted_stage_warnings.append("Shade control unavailable")
+            return
+
+        target = self._assisted_target_percent or 0
+        tasks = []
+        for shade_id in available:
+            calibration = self._calibration_collection.for_shade(shade_id)
+            invert = calibration.resolved_invert(self._calibration_collection.global_invert)
+            raw = pct_to_raw(target, calibration.anchors, invert)
+            tasks.append(batcher.enqueue(shade_id, raw))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+            coordinator.burst()
+
+    def _assisted_stage_positions(self) -> list[str]:
+        coordinator = self._coordinator
+        if coordinator is None or not coordinator.data:
+            return []
+        positions: list[str] = []
+        for shade_id in self._assisted_members:
+            shade = coordinator.data.get(shade_id)
+            if not isinstance(shade, Shade) or shade.position is None:
+                continue
+            calibration = self._calibration_collection.for_shade(shade_id)
+            invert = calibration.resolved_invert(self._calibration_collection.global_invert)
+            pct = raw_to_pct(shade.position, calibration.anchors, invert)
+            label = self._assisted_member_labels([shade_id])[0]
+            if pct is None:
+                positions.append(f"{label}: {shade.position}")
+            else:
+                positions.append(f"{label}: {pct}% ({shade.position})")
+        return positions
+
+    async def _assisted_record(self) -> tuple[list[str], list[str]]:
+        coordinator = self._coordinator
+        if coordinator is None or not coordinator.data:
+            raise InvalidCalibrationError(
+                ERR_ANCHORS_TOO_FEW, "Shades are unavailable"
+            )
+
+        target = self._assisted_target_percent or 0
+        saved: list[str] = []
+        skipped: list[str] = []
+        snapshot: dict[str, tuple[ShadeCalibration, bool]] = {}
+        new_values: dict[str, ShadeCalibration] = {}
+
+        for shade_id in self._assisted_members:
+            shade = coordinator.data.get(shade_id)
+            if not isinstance(shade, Shade) or shade.position is None:
+                skipped.append(shade_id)
+                continue
+            calibration = self._calibration_collection.for_shade(shade_id)
+            anchors, changed = apply_assisted_anchor(
+                calibration,
+                target,
+                shade.position,
+            )
+            if not changed:
+                skipped.append(shade_id)
+                continue
+            snapshot[shade_id] = (
+                calibration,
+                shade_id in self._calibration_collection.per_shade,
+            )
+            new_values[shade_id] = ShadeCalibration(
+                anchors=anchors,
+                invert_override=calibration.invert_override,
+            )
+            saved.append(shade_id)
+
+        for shade_id in saved:
+            update_calibration_option(self._options, shade_id, new_values[shade_id])
+
+        timestamp = datetime.now(timezone.utc)
+        run = AssistedCalibrationRun(
+            group_id=self._assisted_group_id or "",
+            target_percent=target,
+            saved=tuple(saved),
+            skipped=tuple(skipped),
+            timestamp=timestamp,
+        )
+
+        if saved:
+            self._calibration_collection = parse_calibration_options(self._options)
+            self._assisted_snapshot = snapshot
+        else:
+            self._assisted_snapshot = None
+
+        self._assisted_last_run = run
+        coordinator.record_assisted_calibration(run)
+        _LOGGER.debug(
+            "Assisted calibration run",
+            extra={
+                "group": self._assisted_group_id,
+                "target_percent": target,
+                "saved": saved,
+                "skipped": skipped,
+            },
+        )
+
+        return saved, skipped
+
+    def _assisted_restore_snapshot(self) -> None:
+        snapshot = self._assisted_snapshot
+        if not snapshot:
+            return
+        for shade_id, (calibration, had_entry) in snapshot.items():
+            if not had_entry and calibration == ShadeCalibration():
+                remove_calibration_option(self._options, shade_id)
+                continue
+            update_calibration_option(self._options, shade_id, calibration)
+        self._calibration_collection = parse_calibration_options(self._options)
+        self._assisted_snapshot = None
 
     async def async_step_edit_shade(
         self, user_input: dict[str, Any] | None = None

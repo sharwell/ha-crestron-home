@@ -26,6 +26,7 @@ from .const import (
     SHADE_POSITION_MAX,
 )
 from .predictive_stop import PlanResult, PredictiveRuntime
+from .assisted_calibration import AssistedCalibrationRun
 from .visual_groups import VisualGroupsConfig, log_invalid_groups
 
 __all__ = ["Shade", "ShadesCoordinator", "StopPlanGroup"]
@@ -148,6 +149,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         self._visual_groups = visual_groups
         self._plan_history: deque[dict[str, Any]] = deque(maxlen=20)
         self._flush_history: deque[dict[str, Any]] = deque(maxlen=20)
+        self._assisted_history: deque[AssistedCalibrationRun] = deque(maxlen=10)
 
     @property
     def client(self) -> ApiClient:
@@ -295,6 +297,13 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
     @property
     def flush_history(self) -> list[dict[str, Any]]:
         return list(self._flush_history)
+
+    @property
+    def assisted_history(self) -> list[dict[str, object]]:
+        return [run.as_diagnostics() for run in self._assisted_history]
+
+    def record_assisted_calibration(self, run: AssistedCalibrationRun) -> None:
+        self._assisted_history.append(run)
 
     def plan_stop(self, shade_ids: Sequence[str]) -> list[StopPlanGroup]:
         now = time.monotonic()
