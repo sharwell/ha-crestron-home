@@ -170,6 +170,36 @@ def test_batcher_flush_callback_receives_payload() -> None:
     asyncio.run(_async_test())
 
 
+def test_batcher_coalesces_group_stage() -> None:
+    """Enqueuing multiple shades together should flush as one payload."""
+
+    async def _async_test() -> None:
+        loop = asyncio.get_running_loop()
+        hass = FakeHass(loop)
+        calls: list[list[dict[str, int]]] = []
+
+        class _Client:
+            async def async_set_shade_positions(self, items, *, retry: bool = True):
+                calls.append(list(items))
+                return ShadeCommandResponse(status="success", results={})
+
+        batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
+
+        await asyncio.gather(
+            *(batcher.enqueue(f"shade-{index}", index * 1000) for index in range(6))
+        )
+
+        await asyncio.sleep(0.2)
+
+        assert len(calls) == 1
+        payload = calls[0]
+        assert len(payload) == 6
+        ids = [item["id"] for item in payload]
+        assert ids == [f"shade-{index}" for index in range(6)]
+
+    asyncio.run(_async_test())
+
+
 def test_batcher_splits_large_payload() -> None:
     """Batches larger than the controller limit should split into multiple posts."""
 

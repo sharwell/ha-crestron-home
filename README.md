@@ -60,6 +60,11 @@ Assistant cover entities.
 - Shade entities automatically apply the configured curve when reporting state and when accepting
   service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
   different raw targets while reaching a visually matching opening.
+- Visual groups expose an **Assisted calibration** wizard under **Options → Assisted calibration**.
+  Pick a visual group, accept the suggested midpoint of the largest remaining percent gap (or enter
+  your own target), and stage the group in one shot. After you visually align the windows the wizard
+  records anchors for the shades that actually changed, skips the rest, and keeps a single-step undo
+  plus diagnostics history for later review.
 
 ### Hold-to-move stop (Milestone 5A)
 

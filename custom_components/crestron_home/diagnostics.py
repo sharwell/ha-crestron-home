@@ -43,6 +43,7 @@ async def async_get_config_entry_diagnostics(
         payload["visual_groups"] = visual_groups.diagnostics()
         payload["plan_events"] = coordinator.plan_history
         payload["flush_events"] = coordinator.flush_history
+        payload["assisted_calibration_runs"] = coordinator.assisted_history
 
     if coordinator is not None and coordinator.data:
         payload["shades"] = {

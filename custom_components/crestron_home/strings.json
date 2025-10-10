@@ -37,6 +37,7 @@
         "menu_options": {
           "options_menu_global_defaults": "Global defaults",
           "options_menu_select_shade": "Calibrate a shade",
+          "options_menu_assisted_calibration": "Assisted calibration",
           "options_menu_visual_groups": "Visual groups",
           "options_menu_visual_groups_create": "Create group",
           "options_menu_visual_groups_rename": "Rename group",
@@ -144,12 +145,53 @@
         "title": "Assign shades to visual groups",
         "description": "Select which group each shade belongs to. Unassigned shades operate independently.",
         "submit": "Save"
+      },
+      "assisted_calibration_select_group": {
+        "title": "Assisted calibration",
+        "description": "{status}",
+        "data": {
+          "group": "Visual group",
+          "action": "Action"
+        },
+        "data_description": {
+          "action": "Start a new assisted calibration run, undo the last run, or go back to the options menu."
+        },
+        "submit": "Continue"
+      },
+      "assisted_calibration_target": {
+        "title": "Target for {group}",
+        "description": "Members: {members}\n{status}",
+        "data": {
+          "mode": "Mode",
+          "target_percent": "Target percent",
+          "action": "Action"
+        },
+        "data_description": {
+          "mode": "Automatic proposes the midpoint of the largest remaining gap. From current location records anchors from the current shade positions.",
+          "target_percent": "Percent to assign to the captured raw positions.",
+          "action": "Continue to staging or change the selected group."
+        },
+        "submit": "Continue"
+      },
+      "assisted_calibration_stage": {
+        "title": "Align shades in {group}",
+        "description": "Target {target}%\nMembers: {members}\nPositions: {positions}\nWarnings: {warnings}",
+        "data": {
+          "action": "Action"
+        },
+        "data_description": {
+          "action": "Record anchors, restage the shades, pick a new target, or return to the group selector."
+        },
+        "submit": "Continue"
       }
     },
     "error": {
       "select_shade": "Select a shade to continue.",
       "invalid_group_name": "Enter a name for the group.",
       "invalid_group": "Select a valid group.",
+      "assisted_no_undo": "No assisted calibration run is available to undo.",
+      "assisted_empty_group": "Assign shades to this group before starting an assisted run.",
+      "assisted_stage_failed": "Failed to stage the shades. Verify the controller connection and try again.",
       "anchors_too_few": "Provide at least two anchors (0% and 100%).",
       "anchors_endpoint": "The first anchor must start at 0% and the last must end at 100%.",
       "anchors_pc_range": "Percent values must stay between 0 and 100 and increase for each anchor.",
