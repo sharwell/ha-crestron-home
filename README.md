@@ -47,6 +47,9 @@ Assistant cover entities.
 
 ### Calibration (Milestone 4)
 
+- See the [Options flow diagram](docs/OPTIONS_FLOW.md) for a visual overview of calibration commit
+  points and exits.
+
 - Each shade can expose a micro-calibration curve so intermediate positions align visually across
   different shade models. Curves are edited from **Options → Calibrate a shade** and consist of at
   least two anchors describing how a Home Assistant percentage maps to the controller's 0–65535 raw
