@@ -16,18 +16,18 @@ flowchart TD
     entry --> options
     options --> openEditor
     options --> selectGroup
-    options --> visual[Visual groups]
-    options --> predictive[Predictive Stop (on/off)]
-    options --> reset[Reset learned parameters]
-    options --> invert[Global invert default]
+    options --> visual["Visual groups"]
+    options --> predictive["Predictive Stop (on/off)"]
+    options --> reset["Reset learned parameters"]
+    options --> invert["Global invert default"]
 
     subgraph ShadeEditor["Calibrate a shade — per-shade editor"]
         direction TB
         openEditor[[Open shade editor]]
-        actions[Insert anchor\nRemove anchor\nReset to defaults\nInvert axis (per shade)]
-        validate{{Validate anchors:\n0% and 100% endpoints\nNon-decreasing raw values}}
+        actions["Insert anchor\nRemove anchor\nReset to defaults\nInvert axis (per shade)"]
+        validate{{"Validate anchors:\n0% and 100% endpoints\nNon-decreasing raw values"}}
         save[[Save — Saves]]
-        cancel[Cancel/Back — Does not save]
+        cancel["Cancel/Back — Does not save"]
         saved[(Curve saved)]
         unsaved[(No anchors saved)]
 
@@ -43,11 +43,11 @@ flowchart TD
     subgraph AssistedWizard["Assisted calibration — group-scoped wizard"]
         direction TB
         selectGroup[[Select visual group]]
-        pickTarget[Pick target\n(largest-gap suggested)]
-        stage[[Stage (batched move)]]
-        align[Visually align by eye]
-        record[[Done/Record anchors\n(per shade, skip unchanged) — Saves]]
-        undo[Undo last (optional)]
+        pickTarget["Pick target\n(largest-gap suggested)"]
+        stage[["Stage (batched move)"]]
+        align["Visually align by eye"]
+        record[["Done/Record anchors\n(per shade, skip unchanged) — Saves"]]
+        undo["Undo last (optional)"]
         exitSaved[(Exit wizard — Saves)]
         exitUnsaved[(No anchors saved)]
 
@@ -58,7 +58,7 @@ flowchart TD
         record --> exitSaved
         record --> undo
         undo --> align
-        align -. Navigate away / Cancel before Done/Record .-> exitUnsaved
+        align -. "Navigate away / Cancel before Done/Record" .-> exitUnsaved
     end
 ```
 
