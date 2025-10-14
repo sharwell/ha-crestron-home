@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import json
+from pathlib import Path
 import sys
 import types
+from typing import Any
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +229,44 @@ def test_invert_from_form_handles_selector_mapping() -> None:
         )
         is None
     )
+
+
+def test_options_root_menu_has_translations() -> None:
+    """Each root menu option should have a matching translation entry."""
+
+    config_entry = config_entries.ConfigEntry()
+    config_entry.options = {}
+    config_entry.entry_id = "test-entry"
+
+    handler = CrestronHomeOptionsFlowHandler(config_entry)
+    handler.hass = types.SimpleNamespace(data={})
+
+    captured: dict[str, Any] = {}
+
+    def _capture_menu(**kwargs: Any) -> dict[str, str]:
+        captured.update(kwargs)
+        return {"type": "menu"}
+
+    handler.async_show_menu = _capture_menu  # type: ignore[assignment]
+
+    result = asyncio.run(handler.async_step_init())
+    assert result == {"type": "menu"}
+    assert captured["step_id"] == "init"
+
+    menu_options = captured["menu_options"]
+    assert isinstance(menu_options, list)
+
+    integration_root = Path(__file__).resolve().parents[1] / "custom_components" / "crestron_home"
+    strings_path = integration_root / "strings.json"
+    translations_path = integration_root / "translations" / "en.json"
+
+    strings_data = json.loads(strings_path.read_text())
+    en_data = json.loads(translations_path.read_text())
+    menu_strings = strings_data["options"]["step"]["init"]["menu_options"]
+    menu_en = en_data["options"]["step"]["init"]["menu_options"]
+
+    for option in menu_options:
+        assert option in menu_strings
+        assert isinstance(menu_strings[option], str) and menu_strings[option]
+        assert option in menu_en
+        assert isinstance(menu_en[option], str) and menu_en[option]
