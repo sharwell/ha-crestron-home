@@ -439,15 +439,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         return self.async_show_menu(
             step_id="init",
-            menu_options={
-                "global_defaults": "options_menu_global_defaults",
-                "select_shade": "options_menu_select_shade",
-                "assisted_calibration": "options_menu_assisted_calibration",
-                "visual_groups": "options_menu_visual_groups",
-                "predictive_stop": "options_menu_predictive_stop",
-                "reset_learning": "options_menu_reset_learning",
-                "finish": "options_menu_finish",
-            },
+            menu_options=[
+                "global_defaults",
+                "select_shade",
+                "assisted_calibration",
+                "visual_groups",
+                "predictive_stop",
+                "reset_learning",
+                "finish",
+            ],
         )
 
     async def async_step_finish(
@@ -480,13 +480,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         self._selected_group_id = None
-        menu = OrderedDict[str, str]()
-        menu["visual_groups_create"] = "options_menu_visual_groups_create"
+        menu: list[str] = ["visual_groups_create"]
         if self._visual_groups.groups:
-            menu["visual_groups_rename_select"] = "options_menu_visual_groups_rename"
-            menu["visual_groups_delete_select"] = "options_menu_visual_groups_delete"
-        menu["visual_groups_assign"] = "options_menu_visual_groups_assign"
-        menu["visual_groups_back"] = "options_menu_visual_groups_back"
+            menu.extend(
+                [
+                    "visual_groups_rename_select",
+                    "visual_groups_delete_select",
+                ]
+            )
+        menu.extend(["visual_groups_assign", "visual_groups_back"])
         return self.async_show_menu(step_id="visual_groups", menu_options=menu)
 
     async def async_step_visual_groups_back(
