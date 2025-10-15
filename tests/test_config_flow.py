@@ -255,6 +255,7 @@ def test_options_root_menu_has_translations() -> None:
 
     menu_options = captured["menu_options"]
     assert isinstance(menu_options, list)
+    assert "select_shade" in menu_options
 
     integration_root = Path(__file__).resolve().parents[1] / "custom_components" / "crestron_home"
     strings_path = integration_root / "strings.json"
@@ -262,11 +263,18 @@ def test_options_root_menu_has_translations() -> None:
 
     strings_data = json.loads(strings_path.read_text())
     en_data = json.loads(translations_path.read_text())
-    menu_strings = strings_data["options"]["step"]["init"]["menu_options"]
-    menu_en = en_data["options"]["step"]["init"]["menu_options"]
+    step_strings = strings_data["options"]["step"]["init"]
+    step_en = en_data["options"]["step"]["init"]
+    menu_strings = step_strings["menu_options"]
+    menu_en = step_en["menu_options"]
+    descriptions_strings = step_strings.get("menu_option_descriptions", {})
+    descriptions_en = step_en.get("menu_option_descriptions", {})
 
     for option in menu_options:
         assert option in menu_strings
         assert isinstance(menu_strings[option], str) and menu_strings[option]
         assert option in menu_en
         assert isinstance(menu_en[option], str) and menu_en[option]
+
+    assert descriptions_strings["select_shade"] == "Open the manual calibration editor for one shade."
+    assert descriptions_en["select_shade"] == "Open the manual calibration editor for one shade."
