@@ -42,6 +42,9 @@
           "predictive_stop": "Predictive Stop",
           "reset_learning": "Reset learned parameters",
           "finish": "Save changes"
+        },
+        "menu_option_descriptions": {
+          "select_shade": "Open the manual calibration editor for one shade."
         }
       },
       "visual_groups": {
