@@ -44,12 +44,18 @@ class CannotConnectError(CrestronHomeApiError):
 
 
 class ShadeCommandFailedError(CrestronHomeApiError):
-    """Raised when a SetState command fails for all shades."""
+    """Raised when the controller reports an aggregate SetState failure."""
 
 
 @dataclass(slots=True)
 class ShadeCommandResult:
-    """Result for a single shade command."""
+    """Controller acknowledgement for a single shade command.
+
+    `status` is the normalized per-shade status, such as "success" or
+    "failure". If a reported item has no usable status, it defaults to failure
+    for an aggregate failure and success otherwise. `message` is optional
+    diagnostic text from the controller.
+    """
 
     status: str
     message: str | None = None
@@ -57,7 +63,13 @@ class ShadeCommandResult:
 
 @dataclass(slots=True)
 class ShadeCommandResponse:
-    """Structured response from the SetState endpoint."""
+    """Controller acknowledgement for a SetState request.
+
+    `status` is the normalized aggregate status. For a partial response,
+    inspect `results` for per-shade outcomes. Its keys are stringified shade
+    identifiers, and omitted identifiers have no individual result. Use
+    position telemetry to confirm the resulting shade position.
+    """
 
     status: str
     results: dict[str, ShadeCommandResult]
@@ -232,7 +244,24 @@ class ApiClient:
     async def async_set_shade_positions(
         self, items: list[dict[str, int]], *, retry: bool = True
     ) -> ShadeCommandResponse:
-        """Send a batch of shade position updates to the controller."""
+        """Submit raw shade targets and return the controller's acknowledgement.
+
+        Each item needs the controller's shade `id` and an integer `position`
+        in the Crestron range of 0 through 65535. The client posts the supplied
+        items as one batch. An empty list returns success with no per-shade
+        results and skips authentication and network I/O.
+
+        With `retry=True`, an authentication rejection of the write triggers a
+        forced login. If that succeeds, the client resubmits the write once.
+        Authentication failures raise InvalidAuthError. Connection errors and
+        timeouts raise CannotConnectError. An aggregate "failure" raises
+        ShadeCommandFailedError. An unexpected HTTP status, non-JSON content
+        type, or response without a usable aggregate status raises
+        CrestronHomeApiError. A JSON decoding error can also propagate.
+
+        Partial results are returned for the caller to inspect. Use a later
+        position reading to confirm physical movement.
+        """
 
         if not items:
             return ShadeCommandResponse(status="success", results={})

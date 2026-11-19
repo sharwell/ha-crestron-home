@@ -224,7 +224,14 @@ def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollecti
 
 
 def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
-    """Convert a Home Assistant percentage to a Crestron raw position value."""
+    """Convert a Home Assistant percentage to a Crestron raw position.
+
+    Supply validated (percent, raw position) anchors from 0% through 100%,
+    with strictly increasing percentages and non-decreasing raw positions.
+    Clamp `pct` to 0–100 and mirror it as 100 minus the value when
+    `invert_axis` is true. Interpolate between the adjacent anchors,
+    round to the nearest integer, and clamp the result to 0–65535.
+    """
 
     pct_value = max(CAL_ANCHOR_PC_MIN, min(CAL_ANCHOR_PC_MAX, int(pct)))
     if invert_axis:
@@ -257,7 +264,18 @@ def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
 
 
 def raw_to_pct(raw: int | None, anchors: Sequence[Anchor], invert_axis: bool) -> int | None:
-    """Convert a Crestron raw position value to a Home Assistant percentage."""
+    """Convert a Crestron raw position to a Home Assistant percentage.
+
+    Return None for a missing position. Otherwise, clamp `raw` to 0–65535.
+    Supply validated (percent, raw position) anchors from 0% through 100%,
+    with strictly increasing percentages and non-decreasing raw positions.
+
+    Use the first segment whose ending raw position reaches the input.
+    Positions outside the calibrated range use its endpoint percentage.
+    When the selected segment is flat and matches the raw position, use
+    its higher percentage. Round to an integer and, when `invert_axis`
+    is true, mirror it as 100 minus the rounded value.
+    """
 
     if raw is None:
         return None
