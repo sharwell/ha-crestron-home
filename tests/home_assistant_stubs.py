@@ -63,6 +63,7 @@ def _home_assistant_modules() -> tuple[ModuleType, ...]:
         async_get_clientsession=_unexpected_session,
     )
     selector = _module("homeassistant.helpers.selector", selector=lambda config: config)
+    entity_registry = _module("homeassistant.helpers.entity_registry")
     storage = _module("homeassistant.helpers.storage", Store=type("Store", (), {}))
     translation = _module(
         "homeassistant.helpers.translation",
@@ -77,6 +78,7 @@ def _home_assistant_modules() -> tuple[ModuleType, ...]:
         "homeassistant.helpers",
         __path__=[],
         aiohttp_client=aiohttp_client,
+        entity_registry=entity_registry,
         selector=selector,
         storage=storage,
         translation=translation,
@@ -97,7 +99,7 @@ def _home_assistant_modules() -> tuple[ModuleType, ...]:
     )
     return (
         home_assistant, config_entries, const, core, data_entry_flow, exceptions,
-        helpers, aiohttp_client, selector, storage, translation, update_coordinator,
+        helpers, aiohttp_client, entity_registry, selector, storage, translation, update_coordinator,
         util, dt,
     )
 

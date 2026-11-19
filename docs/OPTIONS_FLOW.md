@@ -37,6 +37,7 @@ flowchart TD
 ## Per-shade editor flow
 
 1. Choose **Calibrate a shade**, select a shade, and choose **Continue**.
+   If you renamed a shade in Home Assistant, the picker shows that name.
 2. Adjust the anchors or the shade's **Invert axis** setting. Keep the 0% and
    100% endpoints. Percentages must increase, and raw positions may stay the
    same or increase.

@@ -32,6 +32,7 @@ from .const import (
     PREDICTIVE_STORAGE_VERSION,
 )
 from .coordinator import Shade, ShadesCoordinator
+from .entity_ids import shade_entity_unique_id
 from .storage import PredictiveStopStore, PredictiveStoreData
 from .write import ShadeWriteBatcher
 
@@ -108,11 +109,8 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
 
     @staticmethod
     def compute_unique_id(entry: ConfigEntry, shade_id: str) -> str:
-        host = entry.data.get(CONF_HOST, entry.unique_id or entry.entry_id)
-        if host is None:
-            host = entry.entry_id
-        host_str = str(host).lower()
-        return f"shade:{host_str}:{shade_id}"
+        """Return the stable entity identifier for the shade."""
+        return shade_entity_unique_id(entry, shade_id)
 
     @property
     def shade(self) -> Shade | None:

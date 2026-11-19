@@ -12,7 +12,7 @@ from homeassistant import loader
 from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from homeassistant.helpers import frame
+from homeassistant.helpers import device_registry as dr, entity_registry as er, frame
 
 from custom_components.crestron_home.api import ShadeCommandResponse
 from custom_components.crestron_home.calibration import parse_calibration_options
@@ -73,6 +73,9 @@ async def hass(
         frame.async_setup(instance)
         instance.config_entries = ConfigEntries(instance, {})
         await instance.config_entries.async_initialize()
+        dr.async_setup(instance)
+        await dr.async_load(instance, load_empty=True)
+        await er.async_load(instance, load_empty=True)
         yield instance
     finally:
         await instance.async_stop(force=True)
@@ -249,6 +252,36 @@ async def _finish_manual(hass: HomeAssistant, flow_id: str) -> None:
     assert menu["type"] is FlowResultType.MENU
     result = await options.async_configure(flow_id, {"next_step_id": "finish"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+@pytest.mark.asyncio
+async def test_calibration_picker_uses_renamed_entity_and_keeps_shade_identity(hass, calibration):
+    entry, _, _ = calibration
+    registry = er.async_get(hass)
+    entity = registry.async_get_or_create(
+        "cover", DOMAIN, f"shade:{entry.entry_id.lower()}:{SHADE_ID}",
+        suggested_object_id="test_shade", original_name="Test shade", config_entry=entry,
+    )
+    options = hass.config_entries.options
+    menu = await options.async_init(entry.entry_id)
+    flow_id = menu["flow_id"]
+    picker = await options.async_configure(flow_id, {"next_step_id": "select_shade"})
+    assert picker["data_schema"].schema["shade"].config["options"] == [
+        {"value": SHADE_ID, "label": "Test shade (shade-1)"}
+    ]
+    options.async_abort(flow_id)
+
+    registry.async_update_entity(entity.entity_id, name="Reading nook")
+    menu = await options.async_init(entry.entry_id)
+    flow_id = menu["flow_id"]
+    picker = await options.async_configure(flow_id, {"next_step_id": "select_shade"})
+    picked, = picker["data_schema"].schema["shade"].config["options"]
+    assert picked == {"value": SHADE_ID, "label": "Reading nook (shade-1)"}
+    editor = await options.async_configure(flow_id, {"shade": picked["value"]})
+    assert editor["step_id"] == "edit_shade"
+    await _submit_manual_anchor(hass, flow_id, action="save")
+    await _finish_manual(hass, flow_id)
+    assert entry.options[OPT_CALIBRATION][SHADE_ID]["anchors"][1] == {"pc": 50, "raw": 36000}
 
 
 @pytest.mark.asyncio

@@ -14,10 +14,10 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL
+from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL, Platform
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError, InvalidAuthError
@@ -53,6 +53,7 @@ from .const import (
     PREDICTIVE_DEFAULT_ENABLED,
 )
 from .coordinator import Shade, ShadesCoordinator
+from .entity_ids import shade_entity_unique_id
 from .predictive_stop import PredictiveRuntime
 from .storage import PredictiveStopStore
 from .visual_groups import (
@@ -304,7 +305,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             return store
         return None
 
-    def _shade_choices(self) -> dict[str, str]:
+    def _shade_choices(self, *, use_entity_names: bool = False) -> dict[str, str]:
         choices: dict[str, str] = {}
         coordinator = self._coordinator
         if coordinator and coordinator.data:
@@ -316,6 +317,14 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         else:
             for shade_id in sorted(self._calibration_collection.per_shade.keys()):
                 choices[shade_id] = shade_id
+        if use_entity_names and choices:
+            registry = er.async_get(self.hass)
+            for shade_id in choices:
+                entity_id = registry.async_get_entity_id(
+                    Platform.COVER, DOMAIN, shade_entity_unique_id(self._config_entry, shade_id)
+                )
+                if entity_id and (entity := registry.async_get(entity_id)) and entity.name:
+                    choices[shade_id] = f"{entity.name} ({shade_id})"
         return choices
 
     def _visual_group_choices(self) -> dict[str, str]:
@@ -999,7 +1008,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
-        choices = self._shade_choices()
+        choices = self._shade_choices(use_entity_names=True)
 
         if user_input is not None:
             try:
