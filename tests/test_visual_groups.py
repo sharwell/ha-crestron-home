@@ -1,20 +1,18 @@
-from collections import deque
-from datetime import UTC, datetime
-
 import pytest
 
-from custom_components.crestron_home import coordinator as coordinator_module
-from custom_components.crestron_home.predictive_stop import PlanResult, ShadeStopTarget
-from custom_components.crestron_home.coordinator import StopPlanGroup, ShadesCoordinator
-from custom_components.crestron_home.visual_groups import (
-    IMPLICIT_GROUP_ID,
-    STANDALONE_PREFIX,
-    VISUAL_GROUPS_VERSION,
-    VisualGroupEntry,
-    VisualGroupsConfig,
-    parse_visual_groups,
-    update_visual_groups_option,
-)
+from home_assistant_stubs import home_assistant_stubs
+
+with home_assistant_stubs():
+    from custom_components.crestron_home.visual_groups import (
+        IMPLICIT_GROUP_ID,
+        OPT_VISUAL_GROUPS,
+        STANDALONE_PREFIX,
+        VISUAL_GROUPS_VERSION,
+        VisualGroupEntry,
+        VisualGroupsConfig,
+        parse_visual_groups,
+        update_visual_groups_option,
+    )
 
 
 def _make_config(groups=None, membership=None):
@@ -74,41 +72,20 @@ def test_update_visual_groups_option_removes_when_empty() -> None:
     assert "visual_groups" not in options
 
 
-class _PredictiveStub:
-    def __init__(self, flush=True) -> None:
-        self.calls: list[list[str]] = []
-        self.flush = flush
+@pytest.mark.asyncio
+async def test_plan_stop_single_group(make_coordinator) -> None:
+    from custom_components.crestron_home.coordinator import StopPlanGroup
 
-    def plan_stop(self, shade_ids, *, timestamp):
-        self.calls.append(list(shade_ids))
-        targets = [
-            ShadeStopTarget(shade_id=shade_id, position=0.5, clamped=False, distance=0.1)
-            for shade_id in shade_ids
-        ]
-        return PlanResult(targets=targets, flush=self.flush)
-
-
-def _make_coordinator(config: VisualGroupsConfig, predictive: _PredictiveStub) -> ShadesCoordinator:
-    coordinator = object.__new__(ShadesCoordinator)
-    coordinator._predictive = predictive
-    coordinator._visual_groups = config
-    coordinator._plan_history = deque(maxlen=20)
-    coordinator._flush_history = deque(maxlen=20)
-    return coordinator
-
-
-def test_plan_stop_single_group() -> None:
-    predictive = _PredictiveStub()
-    coordinator = _make_coordinator(_make_config(), predictive)
+    coordinator = make_coordinator()
     groups = coordinator.plan_stop(["shade1", "shade2"])
-    assert predictive.calls == [["shade1", "shade2"]]
     assert len(groups) == 1
     assert isinstance(groups[0], StopPlanGroup)
     assert groups[0].shade_ids == ["shade1", "shade2"]
-    assert groups[0].plan.targets[0].shade_id == "shade1"
+    assert [target.shade_id for target in groups[0].plan.targets] == ["shade1", "shade2"]
 
 
-def test_plan_stop_multiple_groups() -> None:
+@pytest.mark.asyncio
+async def test_plan_stop_multiple_groups(make_coordinator) -> None:
     config = _make_config(
         groups={
             "group_a": VisualGroupEntry(name="Group A"),
@@ -116,28 +93,31 @@ def test_plan_stop_multiple_groups() -> None:
         },
         membership={"shade1": "group_a", "shade3": "group_b"},
     )
-    predictive = _PredictiveStub(flush=False)
-    coordinator = _make_coordinator(config, predictive)
+    coordinator = make_coordinator({OPT_VISUAL_GROUPS: config.as_options()})
     groups = coordinator.plan_stop(["shade1", "shade2", "shade3"])
-    assert predictive.calls == [["shade1"], ["shade2"], ["shade3"]]
     assert [group.group_id for group in groups] == ["group_a", f"{STANDALONE_PREFIX}shade2", "group_b"]
+    planned_shades = [[target.shade_id for target in group.plan.targets] for group in groups]
+    assert planned_shades == [["shade1"], ["shade2"], ["shade3"]]
 
 
-def test_plan_stop_invalid_group_logs(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.asyncio
+async def test_plan_stop_invalid_group_logs(
+    make_coordinator, caplog: pytest.LogCaptureFixture,
+) -> None:
     config = _make_config(membership={"shade1": "ghost"})
-    predictive = _PredictiveStub()
-    coordinator = _make_coordinator(config, predictive)
+    coordinator = make_coordinator({OPT_VISUAL_GROUPS: config.as_options()})
     with caplog.at_level("WARNING"):
         coordinator.plan_stop(["shade1"])
     assert any("ghost" in record.message for record in caplog.records)
 
 
-def test_handle_write_flush_records_groups() -> None:
+@pytest.mark.asyncio
+async def test_handle_write_flush_records_groups(make_coordinator) -> None:
     config = _make_config(
         groups={"group_a": VisualGroupEntry(name="Group A")},
         membership={"shade1": "group_a"},
     )
-    coordinator = _make_coordinator(config, _PredictiveStub())
+    coordinator = make_coordinator({OPT_VISUAL_GROUPS: config.as_options()})
     coordinator.handle_write_flush(
         [
             {"id": "shade1", "position": 1000},
@@ -152,5 +132,4 @@ def test_handle_write_flush_records_groups() -> None:
     assert any(
         group["group_id"] == f"{STANDALONE_PREFIX}shade2" for group in entry["groups"]
     )
-coordinator_module.utcnow = lambda: datetime.now(UTC)
 

@@ -72,7 +72,11 @@
         "title": "Select a shade",
         "description": "Choose the shade whose calibration curve you want to edit.",
         "data": {
-          "shade": "Shade"
+          "shade": "Shade",
+          "action": "Action"
+        },
+        "data_description": {
+          "action": "Open the selected shade or return to Options to save pending changes."
         },
         "submit": "Continue"
       },
@@ -81,12 +85,14 @@
         "description": "Adjust anchors so the shade reports consistent visual positions. The first anchor must remain at 0% and the last at 100%.",
         "data": {
           "invert_axis": "Invert axis",
+          "minimum_position": "Minimum position (%)",
           "action": "Action",
           "insert_after": "Insert anchor between",
           "remove_index": "Remove anchor"
         },
         "data_description": {
           "invert_axis": "Choose whether this shade should flip the visual axis relative to the global default.",
+          "minimum_position": "Set the lowest allowed position for this shade. Use 0 for full travel. Stop moves a shade up to the minimum if it is already below it.",
           "action": "Save changes or add/remove anchors before saving.",
           "insert_after": "Pick where the new anchor should be inserted when adding.",
           "remove_index": "Select which anchor to remove. The first and last anchors cannot be removed."
@@ -199,18 +205,31 @@
       "invalid_group": "Select a valid group.",
       "assisted_no_undo": "No assisted calibration run is available to undo.",
       "assisted_empty_group": "Assign shades to this group before starting an assisted run.",
-      "assisted_stage_failed": "Failed to stage the shades. Verify the controller connection and try again.",
+      "assisted_stage_failed": "One or more shades could not be staged. Review the warnings before recording anchors.",
       "anchors_too_few": "Provide at least two anchors (0% and 100%).",
       "anchors_endpoint": "The first anchor must start at 0% and the last must end at 100%.",
       "anchors_pc_range": "Percent values must stay between 0 and 100 and increase for each anchor.",
       "anchors_raw_range": "Raw position values must stay between 0 and 65535.",
       "anchors_pc_order": "Anchor percentages must increase for each entry.",
-      "anchors_raw_monotonic": "Raw values must never decrease between anchors."
+      "anchors_raw_monotonic": "Raw values must never decrease between anchors.",
+      "minimum_position_unreachable": "The calibration cannot reach the minimum position. Adjust the anchors or lower the minimum."
+    },
+    "abort": {
+      "options_changed": "Crestron Home options changed while this dialog was open. Reopen Options to make your changes."
     }
   },
   "exceptions": {
     "error_write_failed": {
       "message": "Failed to send commands to the controller."
+    },
+    "error_minimum_position_changed": {
+      "message": "The shade minimum position changed. Retry the command."
+    },
+    "error_minimum_position_unreachable": {
+      "message": "The shade calibration cannot reach the minimum position."
+    },
+    "error_exact_target_superseded": {
+      "message": "Another command changed the shade target before it could be sent."
     },
     "error_partial_write": {
       "message": "Shade command failed for {shade_id}: {reason}"

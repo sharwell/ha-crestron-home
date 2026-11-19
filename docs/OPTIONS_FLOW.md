@@ -1,90 +1,79 @@
 # Options flow overview
 
-Use this diagram to see how Crestron Home's Options menu branches into calibration editors and
-where anchors are actually persisted. The emphasis is on preventing accidental exits from the
-Assisted calibration wizard or per-shade editor before anchors are saved.
+In Home Assistant, open **Settings → Devices & services → Crestron Home** and
+select **Configure** on the integration entry. **Save changes** on the top-level
+Options menu is the step that persists pending calibration. Closing the dialog
+before that step discards pending calibration. Automatic staging can move shades
+before any calibration is saved. If another dialog saves changes first, reopen
+Options and re-enter any edits you still want to make.
 
 ## Combined diagram
 
-<div role="img" aria-label="Options flow highlighting calibration commit points and no-save exits">
-
 ```mermaid
 flowchart TD
-    entry([HA Settings → Devices & Services → Crestron Home → Configure → Options])
-    options[[Options]]
+    accTitle: Calibration save and exit paths
+    accDescr: Manual edits return through the shade picker. Assisted edits return through group selection. Save changes on the top-level Options menu commits pending edits. Closing the dialog discards them.
 
-    entry --> options
-    options --> openEditor
-    options --> selectGroup
-    options --> visual["Visual groups"]
-    options --> predictive["Predictive Stop (on/off)"]
-    options --> reset["Reset learned parameters"]
-    options --> invert["Global invert default"]
+    options["Crestron Home options"]
+    options -->|Calibrate a shade| manual["Select a shade and edit its curve"]
+    manual -->|Save calibration| pendingCurve["Valid curve is pending"]
+    manual -->|Back| discardEdit["Current edit discarded"]
+    pendingCurve --> picker["Shade picker"]
+    discardEdit --> picker
+    picker -->|Back to options| optionsMenu
+    picker -.->|Close dialog| discarded(["Pending calibration discarded"])
 
-    subgraph ShadeEditor["Calibrate a shade — per-shade editor"]
-        direction TB
-        openEditor[[Open shade editor]]
-        actions["Insert anchor\nRemove anchor\nReset to defaults\nInvert axis (per shade)"]
-        validate{{"Validate anchors:\n0% and 100% endpoints\nNon-decreasing raw values"}}
-        save[[Save — Saves]]
-        cancel["Cancel/Back — Does not save"]
-        saved[(Curve saved)]
-        unsaved[(No anchors saved)]
-
-        openEditor --> actions
-        actions --> validate
-        validate -->|Pass| save
-        validate -->|Fail| actions
-        save --> saved
-        actions --> cancel
-        cancel --> unsaved
-    end
-
-    subgraph AssistedWizard["Assisted calibration — group-scoped wizard"]
-        direction TB
-        selectGroup[[Select visual group]]
-        pickTarget["Pick target\n(largest-gap suggested)"]
-        stage[["Stage (batched move)"]]
-        align["Visually align by eye"]
-        record[["Done/Record anchors\n(per shade, skip unchanged) — Saves"]]
-        undo["Undo last (optional)"]
-        exitSaved[(Exit wizard — Saves)]
-        exitUnsaved[(No anchors saved)]
-
-        selectGroup --> pickTarget
-        pickTarget --> stage
-        stage --> align
-        align --> record
-        record --> exitSaved
-        record --> undo
-        undo --> align
-        align -. "Navigate away / Cancel before Done/Record" .-> exitUnsaved
-    end
+    options -->|Assisted calibration| start["Select a visual group and target"]
+    start --> align["Align shades<br/>Automatic staging can move shades"]
+    align -->|Record anchors| target["Target screen<br/>Anchors are pending"]
+    target -->|Change group| groups["Group selection"]
+    align -->|Back to groups| groups
+    groups -->|Undo last| restored["Restore previous pending anchors"]
+    restored --> groups
+    groups -->|Back| optionsMenu["Top-level Options menu"]
+    optionsMenu -->|Save changes| saved(["Calibration saved"])
+    optionsMenu -.->|Close dialog| discarded
 ```
-
-</div>
-
-### Legend
-
-- **Rounded rectangles** mark user actions.
-- **Double-bordered rectangles** label commit points that save anchors.
-- **Plain rectangles** identify navigation or context-only branches.
-- **Parallelograms** highlight the persistent outcomes after each branch.
-- **Diamonds** represent validation checks.
-- Dashed arrows call out exits that do **not** persist changes.
 
 ## Per-shade editor flow
 
-1. Open **Options → Calibrate a shade**.
-2. Adjust anchors as needed: insert, remove, reset to defaults, or toggle the per-shade **Invert axis**.
-3. **Save** commits the calibrated curve after it passes the monotonicity and endpoint validation.
-4. Choosing **Cancel/Back** or navigating away exits without saving; no anchors are persisted.
+1. Choose **Calibrate a shade**, select a shade, and choose **Continue**.
+   If you renamed a shade in Home Assistant, the picker shows that name.
+2. Adjust the anchors or the shade's **Invert axis** setting. Keep the 0% and
+   100% endpoints. Percentages must increase, and raw positions may stay the
+   same or increase.
+   Set **Minimum position (%)** to limit how far this shade can close. A value
+   of 0 allows full travel. If the curve cannot reach the minimum within its
+   calibrated travel, adjust the anchors or lower the minimum.
+   **Reset to defaults** resets the curve and axis and keeps the minimum.
+3. Choose **Save calibration** and select **Apply**. A valid curve becomes
+   pending, and the form returns to **Select a shade**. To discard the current
+   edit, choose **Back** and select **Apply**. This also returns to the shade
+   picker and leaves any earlier pending edits intact.
+
+From the shade picker, choose **Back to options** and select **Continue**.
+Choose **Save changes** on the top-level Options menu to apply the pending
+calibration.
 
 ## Assisted calibration flow
 
-1. Launch **Options → Assisted calibration**.
-2. Select a visual group, then pick a target percentage (the wizard suggests the largest remaining gap).
-3. Stage the batched move, visually align the windows, and use **Done/Record anchors** to store new points
-   for each shade that actually changed (unchanged shades are skipped automatically).
-4. Optionally undo the last recording step to retry alignment.
-5. Leaving the wizard or cancelling **before Done/Record** means **No anchors saved**.
+1. Choose **Assisted calibration**, select a visual group with at least one
+   shade, then choose **Start** and select **Continue**.
+2. Accept the suggested midpoint of the largest remaining gap or enter your own
+   target percentage. **Automatic** stages a move when you continue. Choose
+   **From current location** to work with the current positions without sending
+   a staging move. In **Automatic** mode, recording skips shades whose staging
+   command was skipped or failed, including offline shades and moves blocked by
+   a minimum position.
+3. On the alignment screen, align the shades as needed, choose **Record
+   anchors**, and select **Continue**. The integration adds new or revised
+   anchors to the pending calibration. It skips unchanged anchors and shades
+   without a reported position.
+4. After recording, the flow returns to the target screen. Choose **Change
+   group** to return to group selection. From the alignment screen, **Back to
+   groups** returns without recording that attempt and keeps earlier pending
+   changes.
+5. On group selection, choose **Undo last** to reverse the most recent
+   recording if it changed anchors. If an earlier curve cannot reach a shade's
+   pending minimum, the current curves stay in place. To finish, choose **Back**
+   on group selection and then **Save changes** on the top-level Options menu.

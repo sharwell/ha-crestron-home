@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import math
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "raw_to_pct",
     "remove_calibration_option",
     "update_calibration_option",
+    "update_minimum_position",
     "validate_anchors",
 ]
 
@@ -36,7 +38,9 @@ from .const import (
     ERR_ANCHORS_RAW_MONOTONIC,
     ERR_ANCHORS_RAW_RANGE,
     ERR_ANCHORS_TOO_FEW,
+    ERR_MINIMUM_POSITION_UNREACHABLE,
     OPT_CALIBRATION,
+    OPT_MINIMUM_POSITIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,6 +74,33 @@ class ShadeCalibration:
             return global_invert
         return self.invert_override
 
+    def minimum_raw_target(self, minimum: int, global_invert: bool) -> int:
+        """Return an allowed raw bound for a positive Home Assistant minimum.
+
+        Round toward open and skip a flat span's raw value when it reports a
+        position below the minimum. Raise InvalidCalibrationError if reaching
+        the minimum would require moving beyond the calibrated open endpoint.
+        """
+        invert = self.resolved_invert(global_invert)
+        threshold = _interpolate_raw(minimum, self.anchors, invert)
+        raw = math.floor(threshold) if invert else math.ceil(threshold)
+        reported = raw_to_pct(raw, self.anchors, invert)
+        assert reported is not None
+        if reported >= minimum:
+            return raw
+
+        # The first matching segment can report the closed side of a plateau.
+        open_endpoint = self.anchors[0 if invert else -1][1]
+        if raw != open_endpoint:
+            raw += -1 if invert else 1
+            reported = raw_to_pct(raw, self.anchors, invert)
+            if reported is not None and reported >= minimum:
+                return raw
+        raise InvalidCalibrationError(
+            ERR_MINIMUM_POSITION_UNREACHABLE,
+            "The shade's calibration cannot reach its minimum position.",
+        )
+
 
 @dataclass(frozen=True)
 class CalibrationCollection:
@@ -77,6 +108,7 @@ class CalibrationCollection:
 
     global_invert: bool
     per_shade: Mapping[str, ShadeCalibration]
+    minimum_positions: Mapping[str, int] = field(default_factory=dict)
 
     def for_shade(self, shade_id: str) -> ShadeCalibration:
         """Return calibration data for a shade."""
@@ -84,6 +116,26 @@ class CalibrationCollection:
         if shade_id in self.per_shade:
             return self.per_shade[shade_id]
         return ShadeCalibration()
+
+    def minimum_position(self, shade_id: str) -> int:
+        """Return the minimum Home Assistant position, with 0 allowing full travel."""
+        return self.minimum_positions.get(shade_id, CAL_ANCHOR_PC_MIN)
+
+    def limit_raw_target(self, shade_id: str, raw: int) -> int:
+        """Keep a controller target at or above the shade's configured minimum.
+
+        Preserve the supplied raw position when there is no minimum or it is
+        already allowed. Raise InvalidCalibrationError when the calibration
+        cannot represent the minimum within its travel range.
+        """
+        minimum = self.minimum_position(shade_id)
+        if minimum == CAL_ANCHOR_PC_MIN:
+            return raw
+        calibration = self.for_shade(shade_id)
+        limit = calibration.minimum_raw_target(minimum, self.global_invert)
+        if calibration.resolved_invert(self.global_invert):
+            return min(raw, limit)
+        return max(raw, limit)
 
 
 def _coerce_int(value: Any) -> int:
@@ -196,15 +248,23 @@ def _parse_shade_calibration(data: Mapping[str, Any]) -> ShadeCalibration:
 
 
 def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollection:
-    """Parse calibration settings from config entry options."""
+    """Parse calibration and per-shade minimum positions from config entry options."""
 
     global_invert = bool(options.get(CONF_INVERT, DEFAULT_INVERT))
     per_shade: dict[str, ShadeCalibration] = {}
+    raw_minimums = options.get(OPT_MINIMUM_POSITIONS, {})
+    minimums: dict[str, int] = {}
+    if isinstance(raw_minimums, Mapping):
+        minimums = {
+            str(shade_id): minimum
+            for shade_id, minimum in raw_minimums.items()
+            if type(minimum) is int and CAL_ANCHOR_PC_MIN < minimum <= CAL_ANCHOR_PC_MAX
+        }
     raw_calibration = options.get(OPT_CALIBRATION, {})
 
     if not isinstance(raw_calibration, Mapping):
         _LOGGER.warning("Calibration options were not a mapping; ignoring")
-        return CalibrationCollection(global_invert, per_shade)
+        return CalibrationCollection(global_invert, per_shade, minimums)
 
     for raw_shade_id, raw_data in raw_calibration.items():
         shade_id = str(raw_shade_id)
@@ -220,12 +280,24 @@ def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollecti
                 "Calibration entry for shade %s is invalid: %s", shade_id, err
             )
 
-    return CalibrationCollection(global_invert, per_shade)
+    return CalibrationCollection(global_invert, per_shade, minimums)
 
 
 def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
-    """Convert a Home Assistant percentage to a Crestron raw position value."""
+    """Convert a Home Assistant percentage to a Crestron raw position.
 
+    Supply validated (percent, raw position) anchors from 0% through 100%,
+    with strictly increasing percentages and non-decreasing raw positions.
+    Clamp `pct` to 0–100 and mirror it as 100 minus the value when
+    `invert_axis` is true. Interpolate between the adjacent anchors,
+    round to the nearest integer, and clamp the result to 0–65535.
+    """
+
+    raw = round(_interpolate_raw(pct, anchors, invert_axis))
+    return max(CAL_ANCHOR_RAW_MIN, min(CAL_ANCHOR_RAW_MAX, raw))
+
+
+def _interpolate_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> float:
     pct_value = max(CAL_ANCHOR_PC_MIN, min(CAL_ANCHOR_PC_MAX, int(pct)))
     if invert_axis:
         pct_value = CAL_ANCHOR_PC_MAX - pct_value
@@ -248,16 +320,22 @@ def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
                 raw = raw_start + (raw_end - raw_start) * ratio
                 break
 
-    raw_int = int(round(raw))
-    if raw_int < CAL_ANCHOR_RAW_MIN:
-        return CAL_ANCHOR_RAW_MIN
-    if raw_int > CAL_ANCHOR_RAW_MAX:
-        return CAL_ANCHOR_RAW_MAX
-    return raw_int
+    return raw
 
 
 def raw_to_pct(raw: int | None, anchors: Sequence[Anchor], invert_axis: bool) -> int | None:
-    """Convert a Crestron raw position value to a Home Assistant percentage."""
+    """Convert a Crestron raw position to a Home Assistant percentage.
+
+    Return None for a missing position. Otherwise, clamp `raw` to 0–65535.
+    Supply validated (percent, raw position) anchors from 0% through 100%,
+    with strictly increasing percentages and non-decreasing raw positions.
+
+    Use the first segment whose ending raw position reaches the input.
+    Positions outside the calibrated range use its endpoint percentage.
+    When the selected segment is flat and matches the raw position, use
+    its higher percentage. Round to an integer and, when `invert_axis`
+    is true, mirror it as 100 minus the rounded value.
+    """
 
     if raw is None:
         return None
@@ -326,3 +404,19 @@ def remove_calibration_option(options: MutableMapping[str, Any], shade_id: str) 
         calibration_root.pop(str(shade_id))
     if not calibration_root:
         options.pop(OPT_CALIBRATION, None)
+
+
+def update_minimum_position(
+    options: MutableMapping[str, Any], shade_id: str, minimum: int,
+) -> None:
+    """Store a validated 0–100 minimum, removing the limit when it is zero."""
+    stored = options.get(OPT_MINIMUM_POSITIONS)
+    minimums = dict(stored) if isinstance(stored, Mapping) else {}
+    if minimum:
+        minimums[shade_id] = minimum
+    else:
+        minimums.pop(shade_id, None)
+    if minimums:
+        options[OPT_MINIMUM_POSITIONS] = minimums
+    else:
+        options.pop(OPT_MINIMUM_POSITIONS, None)

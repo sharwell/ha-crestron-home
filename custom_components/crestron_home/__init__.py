@@ -9,7 +9,7 @@ from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL, Platform
 from homeassistant.core import HomeAssistant
 
 from .api import ApiClient
-from .calibration import parse_calibration_options
+from .calibration import CalibrationCollection, parse_calibration_options
 from .const import (
     CONF_API_TOKEN,
     DATA_API_CLIENT,
@@ -81,7 +81,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     predictive_runtime.enabled = entry.options.get(OPT_PREDICTIVE_STOP, PREDICTIVE_DEFAULT_ENABLED)
 
-    calibrations = parse_calibration_options(entry.options)
+    loaded_options = entry.options
+    calibrations = parse_calibration_options(loaded_options)
     visual_groups = parse_visual_groups(entry.options)
 
     coordinator = ShadesCoordinator(
@@ -94,9 +95,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     await coordinator.async_config_entry_first_refresh()
 
+    def _write_calibrations() -> CalibrationCollection:
+        # A batch queued before an options update can flush during the reload.
+        options = entry.options
+        return calibrations if options is loaded_options else parse_calibration_options(options)
+
     batcher = ShadeWriteBatcher(
         hass,
         client,
+        get_calibrations=_write_calibrations,
         on_success=lambda: coordinator.bump_fast_poll(),
         on_flush=coordinator.handle_write_flush,
     )

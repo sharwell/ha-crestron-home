@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -8,15 +9,23 @@ def test_readme_links_to_options_flow() -> None:
     assert "[Options flow diagram](docs/OPTIONS_FLOW.md)" in readme
 
 
-def test_options_flow_contains_required_labels() -> None:
+def test_options_flow_labels_the_top_level_save_and_navigation_actions() -> None:
     doc_text = (PROJECT_ROOT / "docs" / "OPTIONS_FLOW.md").read_text(encoding="utf-8")
-    required_phrases = [
-        "Save",
-        "Done/Record",
-        "Cancel/Back",
-        "No anchors saved",
-        "largest-gap",
-        "skip unchanged",
-    ]
-    for phrase in required_phrases:
-        assert phrase in doc_text, f"Missing required phrase: {phrase!r}"
+    intro, diagram, walkthrough = doc_text.split("```", maxsplit=2)
+    instructions = " ".join((intro + walkthrough).split())
+
+    labels = (
+        "Save calibration",
+        "Back to options",
+        "Record anchors",
+        "Change group",
+        "Back to groups",
+        "Undo last",
+        "Save changes",
+    )
+    for label in labels:
+        assert f"|{label}|" in diagram, f"Missing diagram action: {label}"
+        assert f"**{label}**" in instructions, f"Missing instructions: {label}"
+
+    save_paths = re.findall(r"(?m)^\s*(\w+)\s+-->(?:\|([^|\n]+)\|)?\s+saved\b", diagram)
+    assert save_paths == [("optionsMenu", "Save changes")]

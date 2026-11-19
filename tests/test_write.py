@@ -1,70 +1,24 @@
 import asyncio
-import importlib.util
-from pathlib import Path
-import sys
+from collections import Counter
 import types
 from typing import Any, Coroutine
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = PROJECT_ROOT / "custom_components" / "crestron_home"
-PACKAGE_NAME = "custom_components.crestron_home"
+import pytest
 
-# Ensure package namespace exists for dynamic imports.
-if "custom_components" not in sys.modules:
-    custom_components_pkg = types.ModuleType("custom_components")
-    custom_components_pkg.__path__ = [str(PROJECT_ROOT / "custom_components")]
-    sys.modules["custom_components"] = custom_components_pkg
+from home_assistant_stubs import home_assistant_stubs
 
-if PACKAGE_NAME not in sys.modules:
-    crestron_home_pkg = types.ModuleType(PACKAGE_NAME)
-    crestron_home_pkg.__path__ = [str(PACKAGE_ROOT)]
-    sys.modules[PACKAGE_NAME] = crestron_home_pkg
+with home_assistant_stubs():
+    from homeassistant.exceptions import HomeAssistantError
 
-# Minimal Home Assistant stubs required by the batcher module.
-homeassistant = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
-
-core_module = types.ModuleType("homeassistant.core")
-core_module.HomeAssistant = type("HomeAssistant", (), {})
-core_module.callback = lambda func: func
-homeassistant.core = core_module
-sys.modules["homeassistant.core"] = core_module
-
-exceptions_module = types.ModuleType("homeassistant.exceptions")
-exceptions_module.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
-homeassistant.exceptions = exceptions_module
-sys.modules["homeassistant.exceptions"] = exceptions_module
-
-helpers_module = types.ModuleType("homeassistant.helpers")
-helpers_module.__path__ = []
-translation_module = types.ModuleType("homeassistant.helpers.translation")
-translation_module.async_get_cached_translations = (
-    lambda hass, language, category, domain: {}
-)
-helpers_module.translation = translation_module
-homeassistant.helpers = helpers_module
-sys.modules["homeassistant.helpers"] = helpers_module
-sys.modules["homeassistant.helpers.translation"] = translation_module
-
-write_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.write", PACKAGE_ROOT / "write.py"
-)
-write = importlib.util.module_from_spec(write_spec)
-assert write_spec and write_spec.loader
-sys.modules[write_spec.name] = write
-write_spec.loader.exec_module(write)
-
-api_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.api", PACKAGE_ROOT / "api.py"
-)
-api = importlib.util.module_from_spec(api_spec)
-assert api_spec and api_spec.loader
-sys.modules[api_spec.name] = api
-api_spec.loader.exec_module(api)
-
-ShadeWriteBatcher = write.ShadeWriteBatcher
-HomeAssistantError = exceptions_module.HomeAssistantError
-ShadeCommandResponse = api.ShadeCommandResponse
-ShadeCommandResult = api.ShadeCommandResult
+    from custom_components.crestron_home import api
+    from custom_components.crestron_home.api import (
+        ShadeCommandFailedError,
+        ShadeCommandResponse,
+        ShadeCommandResult,
+    )
+    from custom_components.crestron_home.calibration import parse_calibration_options
+    from custom_components.crestron_home.const import BATCH_MAX_ITEMS, OPT_MINIMUM_POSITIONS
+    from custom_components.crestron_home.write import ShadeWriteBatcher
 
 
 class FakeHass:
@@ -76,8 +30,93 @@ class FakeHass:
         return self.loop.create_task(coro)
 
 
-def test_batcher_deduplicates_latest_position() -> None:
-    """The batcher should send only the latest command per shade."""
+class _HttpReply:
+    def __init__(self, status, data=None, *, on_enter=None):
+        self.status = status
+        self._data = data
+        self._on_enter = on_enter
+
+    async def __aenter__(self):
+        if self._on_enter is not None:
+            await self._on_enter()
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def raise_for_status(self):
+        assert self.status == 200
+
+    async def json(self):
+        return self._data
+
+
+class _ReauthController:
+    def __init__(self):
+        self.reauth_started = asyncio.Event()
+        self.reauth_complete = asyncio.Event()
+        self.logins = 0
+        self.writes = []
+
+    async def _pause_reauthentication(self):
+        self.reauth_started.set()
+        await self.reauth_complete.wait()
+
+    def get(self, _url, **_kwargs):
+        self.logins += 1
+        return _HttpReply(
+            200,
+            {"authkey": f"fictional-key-{self.logins}"},
+            on_enter=self._pause_reauthentication if self.logins == 2 else None,
+        )
+
+    def post(self, _url, *, json, headers, **_kwargs):
+        self.writes.append((json["shades"], headers["Crestron-RestAPI-AuthKey"]))
+        if len(self.writes) == 1:
+            return _HttpReply(401)
+        return _HttpReply(200, {"status": "success"})
+
+
+@pytest.mark.parametrize("raise_minimum", [False, True], ids=["unchanged", "raised"])
+def test_write_retry_rechecks_current_minimum(monkeypatch, raise_minimum):
+    async def _async_test():
+        hass = FakeHass(asyncio.get_running_loop())
+        controller = _ReauthController()
+        monkeypatch.setattr(api, "async_get_clientsession", lambda _hass: controller)
+        options = {"invert": False}
+        batcher = ShadeWriteBatcher(
+            hass, api.ApiClient(hass, "controller.invalid", "fictional-token"),
+            debounce_ms=0, get_calibrations=lambda: parse_calibration_options(options),
+        )
+        queued = asyncio.create_task(batcher.enqueue("shade-1", 0))
+        requested = [{"id": "shade-1", "position": 0}]
+        try:
+            await asyncio.wait_for(controller.reauth_started.wait(), timeout=5)
+            if raise_minimum:
+                options[OPT_MINIMUM_POSITIONS] = {"shade-1": 10}
+                controller.reauth_complete.set()
+                with pytest.raises(HomeAssistantError, match="minimum position changed"):
+                    await asyncio.wait_for(queued, timeout=5)
+                assert controller.writes == [(requested, "fictional-key-1")]
+                await asyncio.wait_for(batcher.enqueue("shade-1", 0), timeout=5)
+                expected = [{"id": "shade-1", "position": 6554}]
+            else:
+                controller.reauth_complete.set()
+                await asyncio.wait_for(queued, timeout=5)
+                expected = requested
+            assert controller.writes == [
+                (requested, "fictional-key-1"), (expected, "fictional-key-2"),
+            ]
+        finally:
+            controller.reauth_complete.set()
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
+
+    asyncio.run(_async_test())
+
+
+@pytest.mark.parametrize("require_exact", [False, True], ids=["coalesced", "exact"])
+def test_batcher_deduplicates_latest_position(require_exact: bool) -> None:
+    """Send the latest target and report superseded exact requests as failures."""
 
     async def _async_test() -> None:
         loop = asyncio.get_running_loop()
@@ -94,14 +133,26 @@ def test_batcher_deduplicates_latest_position() -> None:
             callback_calls.append(1)
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=50, on_success=_on_success)
-
-        await asyncio.gather(
-            batcher.enqueue("shade-1", 1000),
-            batcher.enqueue("shade-1", 2000),
-        )
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    batcher.enqueue("shade-1", 1000, require_exact=require_exact),
+                    batcher.enqueue("shade-1", 2000),
+                    return_exceptions=True,
+                ),
+                timeout=5,
+            )
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert calls == [[{"id": "shade-1", "position": 2000}]]
         assert len(callback_calls) == 1
+        assert results[1] is None
+        if require_exact:
+            assert isinstance(results[0], HomeAssistantError)
+            assert "Another command changed the shade target" in str(results[0])
+        else:
+            assert results[0] is None
 
     asyncio.run(_async_test())
 
@@ -124,11 +175,17 @@ def test_batcher_partial_failure_propagates() -> None:
                 )
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=0)
-
-        first = asyncio.create_task(batcher.enqueue("shade-1", 1000))
-        second = asyncio.create_task(batcher.enqueue("shade-2", 2000))
-
-        results = await asyncio.gather(first, second, return_exceptions=True)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    batcher.enqueue("shade-1", 1000),
+                    batcher.enqueue("shade-2", 2000),
+                    return_exceptions=True,
+                ),
+                timeout=5,
+            )
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert results[0] is None
         assert isinstance(results[1], HomeAssistantError)
@@ -159,8 +216,11 @@ def test_batcher_flush_callback_receives_payload() -> None:
             on_flush=_on_flush,
         )
 
-        await batcher.enqueue("shade-1", 1234)
-        await batcher.async_flush()
+        try:
+            await asyncio.wait_for(batcher.enqueue("shade-1", 1234), timeout=5)
+            await asyncio.wait_for(batcher.async_flush(), timeout=5)
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert flush_calls
         payload, status = flush_calls[0]
@@ -185,11 +245,15 @@ def test_batcher_coalesces_group_stage() -> None:
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
 
-        await asyncio.gather(
-            *(batcher.enqueue(f"shade-{index}", index * 1000) for index in range(6))
-        )
-
-        await asyncio.sleep(0.2)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(batcher.enqueue(f"shade-{index}", index * 1000) for index in range(6))
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
 
         assert len(calls) == 1
         payload = calls[0]
@@ -215,15 +279,55 @@ def test_batcher_splits_large_payload() -> None:
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
 
-        for index in range(20):
-            await batcher.enqueue(f"shade-{index}", index)
-        await asyncio.sleep(0.2)
-        await batcher.async_flush()
+        shade_ids = [f"shade-{index}" for index in range(BATCH_MAX_ITEMS + 4)]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        batcher.enqueue(shade_id, index)
+                        for index, shade_id in enumerate(shade_ids)
+                    )
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
 
         assert len(calls) >= 2
-        assert all(len(call) <= 16 for call in calls)
-        all_ids = [item["id"] for call in calls for item in call]
-        assert all_ids.count("shade-0") == 1
-        assert all_ids.count("shade-19") == 1
+        assert max(map(len, calls)) == BATCH_MAX_ITEMS
+        assert Counter(item["id"] for call in calls for item in call) == Counter(shade_ids)
+
+    asyncio.run(_async_test())
+
+
+def test_batcher_sends_remaining_writes_after_a_split_request_fails() -> None:
+    """Only callers in the rejected request should receive its error."""
+
+    async def _async_test() -> None:
+        hass = FakeHass(asyncio.get_running_loop())
+        calls: list[list[str]] = []
+
+        class _Client:
+            async def async_set_shade_positions(self, items, *, retry: bool = True):
+                calls.append([item["id"] for item in items])
+                if len(calls) == 1:
+                    raise ShadeCommandFailedError("rejected")
+                return ShadeCommandResponse(status="success", results={})
+
+        batcher = ShadeWriteBatcher(hass, _Client(), max_items=2)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(batcher.enqueue(f"shade-{index}", index) for index in range(3)),
+                    return_exceptions=True,
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
+
+        assert calls == [["shade-0", "shade-1"], ["shade-2"]]
+        assert all(isinstance(result, HomeAssistantError) for result in results[:2])
+        assert results[2] is None
 
     asyncio.run(_async_test())

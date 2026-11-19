@@ -1,146 +1,130 @@
 # Crestron Home integration for Home Assistant
 
-Milestone 1 (M1) introduces authenticated communication with the Crestron Home REST API and a
-connectivity check that confirms the number of rooms reported by the controller before finishing
-setup. Milestone 2 (M2) extends the integration with read-only shade telemetry exposed as Home
-Assistant cover entities.
+Control Crestron Home shades from Home Assistant. Each shade appears as a cover
+with position and availability. You can open, close, stop, or set its position,
+calibrate how far it opens at each percentage, and group shades for coordinated
+stops.
+
+## Installation
+
+Home Assistant needs network access to the Crestron Home controller and a Web API
+token. To install with HACS, add
+[`sharwell/ha-crestron-home`](https://github.com/sharwell/ha-crestron-home)
+as a custom repository of type **Integration**. Download **Crestron Home** in
+HACS, then restart Home Assistant. [HACS custom repository instructions](https://www.hacs.xyz/docs/faq/custom_repositories/)
 
 ## Configuration
 
-1. On the Crestron controller, navigate to **Settings → System Control Options → Web API Settings**
+1. On the Crestron controller, go to **Settings → System Control Options → Web API Settings**
    and create a long-lived Web API token.
-2. In Home Assistant, go to **Settings → Devices & Services → Add Integration** and search for
-   **Crestron Home**.
-3. Enter the controller host, paste the Web API token, and choose whether to verify the SSL
-   certificate. Disable SSL verification only when the controller uses a self-signed certificate.
-4. Submit to test the connection. The flow logs in, retrieves the list of rooms, and displays how
-   many were found before you confirm the configuration.
+2. In Home Assistant, go to **Settings → Devices & services → Add integration** and
+   select **Crestron Home**.
+3. Enter the controller host and API token. Leave SSL certificate verification
+   enabled unless the controller uses a self-signed certificate.
+4. Submit to test the connection. Confirm the number of rooms the controller
+   reports to finish setup.
 
-### Shades (Milestone 2)
+To change integration options, open **Settings → Devices & services → Crestron
+Home** and select **Configure** on the integration entry.
 
-- Every Crestron shade is exposed as a Home Assistant `cover` entity with the shade name reported
-  by the controller. Entities surface the most recent shade position and availability status.
-- The coordinator polls shade data every ~12 seconds while idle. Future control commands can call
-  the coordinator's `boost()` helper to switch to 1.5 second polling for short bursts.
-- The **Invert shade position** option is available under the integration's **Options** menu. When
-  enabled, 0% represents fully open (Crestron polarity) instead of fully closed (Home Assistant
-  polarity). This setting now acts as the global default for the calibration editor introduced in
-  Milestone 4.
-- Availability is derived from the controller's `connectionStatus` value. Offline shades appear as
-  unavailable in Home Assistant until the controller reports them as connected again.
+## Shade control
 
-### Shade control (Milestone 3)
+Use the cover controls or the `cover.open_cover`, `cover.close_cover`,
+`cover.set_cover_position`, and `cover.stop_cover` actions. A shade the controller
+reports as offline appears unavailable. The integration polls approximately every
+12 seconds while idle and polls faster after successful writes.
 
-- Shade entities now implement Home Assistant's `open_cover`, `close_cover`, and
-  `set_cover_position` services. Requests apply the global invert option and scale between
-  Home Assistant's 0–100% representation and Crestron's 0–65535 range.
-- Commands enqueue into a per-controller batcher. Calls landing within an 80 ms window coalesce
-  into one `POST /cws/api/shades/SetState` request (up to 16 shades per batch) so grouped scenes
-  lift together. Duplicate writes for the same shade keep the latest position before the batch is
-  sent.
-- After any successful write (full or partial), the coordinator bumps into fast polling (≈10 s at
-  1–2 s intervals) so Home Assistant state converges quickly with the controller's telemetry.
-- To verify batching manually, enable debug logging (see `sample_config/configuration.yaml` in the
-  repo) and trigger a scene that adjusts eight shades at once. A single DEBUG line similar to
-  `POST /shades/SetState items=8 ids=[...] status=success` confirms one request served the entire
-  batch.
+Commands queued within the 80 ms batching window can share a controller request,
+with up to 16 shades per request. If several targets for one shade are queued
+before the request is sent, the latest target wins.
 
-### Calibration (Milestone 4)
+To limit how far a shade can close, set **Minimum position (%)** under
+**Options → Calibrate a shade**, then apply it with **Save changes**. Close and
+position commands below that limit target the minimum. Set it back to 0% to
+allow full travel again. When assisted calibration skips an automatic move
+below a shade's minimum, it also skips recording that shade's anchor.
 
-- See the [Options flow diagram](docs/OPTIONS_FLOW.md) for a visual overview of calibration commit
-  points and exits.
+### Stop and hold-to-move
 
-- Each shade can expose a micro-calibration curve so intermediate positions align visually across
-  different shade models. Curves are edited from **Options → Calibrate a shade** and consist of at
-  least two anchors describing how a Home Assistant percentage maps to the controller's 0–65535 raw
-  value.
-- Anchors must remain in ascending percent order, start at 0%, and end at 100%. Raw values must
-  never decrease between anchors—flat segments are allowed when a range of raw values should report
-  the same Home Assistant percentage. The options flow validates these rules before saving.
-- The editor supports inserting anchors between any two existing points, removing interior anchors,
-  and resetting back to the default `(0%, 0)` and `(100%, 65535)` endpoints. A per-shade **Invert
-  axis** toggle overrides the global polarity when a single window is mounted opposite the rest.
-- Shade entities automatically apply the configured curve when reporting state and when accepting
-  service calls. For example, two calibrated shades that receive `set_cover_position: 23` will send
-  different raw targets while reaching a visually matching opening.
-- Visual groups expose an **Assisted calibration** wizard under **Options → Assisted calibration**.
-  Pick a visual group, accept the suggested midpoint of the largest remaining percent gap (or enter
-  your own target), and stage the group in one shot. After you visually align the windows the wizard
-  records anchors for the shades that actually changed, skips the rest, and keeps a single-step undo
-  plus diagnostics history for later review.
+**Predictive Stop** is enabled by default. It estimates where moving shades will
+stop using learned travel speed, command latency, and deceleration. Stop is
+best effort because the Crestron REST API lacks a native stop command.
+If a shade is already below its configured minimum, Stop sends it to the
+minimum. This can move the shade or reverse its direction.
 
-### Hold-to-move stop (Milestone 5A)
+If you turn off **Options → Predictive Stop**, Stop targets the latest known
+position, subject to the minimum. It skips a shade when there is no known
+position. To clear learned parameters, open **Options → Reset learned
+parameters** and select the shade. The model learns again as the shade moves.
 
-- Shade entities now advertise the `stop_cover` service. Because the REST API does not expose a
-  native STOP command, the integration performs a best-effort freeze: it reads each shade's most
-  recent reported position and posts that value straight back to
-  `POST /cws/api/shades/SetState`. The same batcher used for open/close/set commands collects STOP
-  requests for up to 80 ms so scenes or simultaneous button releases flush as one payload. The
-  coordinator immediately bumps into fast polling so Home Assistant reflects the halted position as
-  soon as the controller reports it.
-- If a shade's current position is unavailable at release time the STOP request skips that shade
-  (others still post). Calibrations and per-shade polarity continue to apply when the integration
-  needs to map a Home Assistant percentage back to the controller's raw 0–65535 range.
-- A Matter wall switch blueprint at
-  `blueprints/automation/crestron_home/matter_shade_hold_release.yaml` demonstrates hold/release
-  wiring. Choose the Matter devices that expose the open/close buttons and pick the corresponding
-  hold and release device triggers surfaced by the Matter driver. Holding calls `cover.open_cover`
-  or `cover.close_cover`; releasing either button calls `cover.stop_cover` so shades coast to a
-  stop.
+The [Matter hold/release blueprint](blueprints/automation/crestron_home/matter_shade_hold_release.yaml)
+lets you hold a wall-switch button to open or close selected shades and release it
+to stop them. Choose the Matter device and the matching hold and release device
+triggers for each button.
 
-### Predictive Stop with online learning (Milestone 6)
+### Visual groups
 
-- Predictive Stop replaces the best-effort freeze with an estimator that predicts where a shade will
-  land once transport latency and deceleration are accounted for. When you press STOP, the planner
-  projects each moving shade forward, clamps to avoid any backtracking, and submits a batched
-  `SetState` call so grouped shades within the same visual group finish together without coupling
-  to other groups.
-- Every shade maintains a tiny model of steady-state speed and command latency. The learning system
-  blends recursive least squares (speed vs. position) with an exponential moving average of the
-  command response time. Samples are collected from the coordinator's burst polls immediately after
-  any write.
-- Predictive Stop is enabled by default and can be toggled from **Options → Predictive Stop**. When
-  disabled the integration reverts to the Milestone 5A freeze-at-last-poll behavior.
-- Per-shade learned parameters can be cleared from **Options → Reset learned parameters**. This also
-  resets the in-memory estimator so subsequent traversals rebuild a fresh model.
-- Diagnostics now expose the current learning parameters, visual group configuration, and the last
-  few stop outcomes. Navigate to the integration tile → **... → Diagnostics** to download a JSON
-  snapshot that includes per-shade steady-state speeds, response latency estimates, recent stop
-  telemetry, and the grouped plan/flush history recorded by the coordinator.
+Use **Options → Visual groups** to put shades that should finish together in the
+same group. With no explicit groups, Predictive Stop treats all shades as one
+group for alignment. Once groups are configured, Predictive Stop aligns shades
+within each group, and unassigned shades are handled independently.
+Under **Assign shades**, choose a group beside each shade's name. If names
+match, the shade IDs distinguish them. Use **Save changes** on the top-level
+Options menu to apply the assignments.
 
-### Visual groups (Milestone 7)
+## Calibration
 
-- Shades can be arranged into **Visual groups** from **Options → Visual groups**. Groups provide a
-  lightweight way to describe which windows should finish together when predictive stops or grouped
-  scenes run.
-- With no explicit groups configured the integration maintains the existing behavior: all shades are
-  treated as a single cohort for alignment and batching decisions.
-- After you create one or more groups, only shades assigned to the same group align with one
-  another. Unassigned shades behave independently so accidental cross-room coupling is avoided.
-- Diagnostics list the configured groups, per-shade membership, and recent plan/flush events tagged
-  with the group identifier for easier troubleshooting.
+Under **Options → Global defaults**, enable **Invert shade position** if the
+controller reports 0% as fully open. Each shade can follow that default or
+override it with its own **Invert axis** setting. The integration applies each
+shade's calibration to both reported positions and position commands.
+
+- **Calibrate a shade** maps Home Assistant percentages to Crestron positions in
+  the 0–65535 range. Keep the 0% and 100% anchors, put intermediate percentages in
+  ascending order, and use raw values that stay the same or increase. Add or
+  remove interior anchors as needed, or select **Reset to defaults** to restore
+  the default curve. **Save calibration** validates the curve and adds it to the
+  pending changes. Choose **Back to options** from the shade picker when you
+  finish editing shades.
+- **Assisted calibration** lets you choose a visual group and accept the suggested
+  midpoint of the largest remaining gap or enter your own target. Stage a move
+  or use the shades' current positions. After aligning the shades, select
+  **Record anchors** to add pending changes for shades that need a new or revised
+  anchor. **Undo last** on the group selection screen reverses the last recorded
+  changes in the current flow.
+
+For assisted calibration, return to group selection and choose **Back**. Select
+**Save changes** on the top-level Options menu to apply either type of
+calibration. Staging can move shades before any calibration is saved.
+The [Options flow diagram](docs/OPTIONS_FLOW.md) shows the workflow branches.
+
+## Troubleshooting
+
+On the **Crestron Home** integration page, choose **Enable debug logging** from the
+menu, reproduce the behavior, then disable debug logging to download the log.
+To check batching, run a scene that sends several shade commands together and
+look for the `POST /cws/api/shades/SetState` summary. Its `items` count and
+`status` show how many targets were sent and how the controller responded.
+Check the shade positions separately to confirm movement.
+[Home Assistant debug logging instructions](https://www.home-assistant.io/docs/configuration/troubleshooting/#debug-logs-and-diagnostics)
+
+Use **Download diagnostics** from the integration entry's menu to inspect learned
+parameters, visual groups, recent stop plans and command batches, and assisted
+calibration history. Before sharing diagnostics or logs, redact credentials,
+controller addresses, private shade, room, and group names and IDs, and raw
+request or response payloads. Check the whole file, including nested entries.
 
 ## Development setup
 
-1. Clone [home-assistant/core](https://github.com/home-assistant/core) next to this repository:
-   ```bash
-   git clone --depth=1 https://github.com/home-assistant/core hass-core
-   ```
-2. Run hassfest validation against the integration scaffold:
-   ```bash
-   (cd hass-core && python3 -m script.hassfest --action validate --integration-path ../custom_components/crestron_home)
-   ```
+CI validates the integration with [hassfest](.github/workflows/hassfest.yml).
+To run it locally, prepare a [Home Assistant Core checkout](https://github.com/home-assistant/core)
+with its Python environment and hassfest dependencies in a sibling directory named `hass-core`.
+From this repository's root, using Bash and the Core Python environment, run:
 
-## Roadmap
-
-- **Milestone 1:** Implement API client, authentication, and REST connectivity validation.
-- **Milestone 2:** Surface read-only shade telemetry via cover entities, including availability and
-  global polarity inversion.
-- **Milestone 3:** Write control for shades (open/close/set position) with request batching.
-- **Milestone 4:** Micro-calibration curves to improve visual position uniformity.
-- **Milestone 5:** Stop operation refinements for hold/release behavior.
-- **Milestone 6:** Discovery and UX polish after milestone-wide deliverables.
-- **Milestone 7:** Broader tests, documentation, and practical examples.
+```bash
+integration_path="$PWD/custom_components/crestron_home"
+(cd ../hass-core && python3 -m script.hassfest --action validate --integration-path "$integration_path")
+```
 
 ## License
 

@@ -133,11 +133,11 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         super().__init__(
             hass,
             _LOGGER,
+            config_entry=entry,
             name=f"{DOMAIN} shades",
             update_interval=timedelta(seconds=SHADE_POLL_INTERVAL_IDLE),
         )
         self._client = client
-        self.config_entry = entry
         self._idle_interval = timedelta(seconds=SHADE_POLL_INTERVAL_IDLE)
         self._fast_interval = timedelta(seconds=SHADE_POLL_INTERVAL_FAST)
         self._burst_interval = timedelta(seconds=SHADE_POLL_INTERVAL_BURST)

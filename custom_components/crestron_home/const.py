@@ -9,6 +9,7 @@ SHADE_POSITION_MAX = 65535
 CONF_API_TOKEN = "api_token"
 CONF_INVERT = "invert"
 OPT_CALIBRATION = "calibration"
+OPT_MINIMUM_POSITIONS = "minimum_positions"
 CAL_KEY_ANCHORS = "anchors"
 CAL_KEY_INVERT = "invert"
 
@@ -30,6 +31,7 @@ ERR_ANCHORS_PC_RANGE = "anchors_pc_range"
 ERR_ANCHORS_RAW_RANGE = "anchors_raw_range"
 ERR_ANCHORS_PC_ORDER = "anchors_pc_order"
 ERR_ANCHORS_RAW_MONOTONIC = "anchors_raw_monotonic"
+ERR_MINIMUM_POSITION_UNREACHABLE = "minimum_position_unreachable"
 
 DEFAULT_VERIFY_SSL = True
 DEFAULT_INVERT = False

@@ -5,19 +5,19 @@ import asyncio
 import copy
 import logging
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL
+from homeassistant.const import CONF_HOST, CONF_VERIFY_SSL, Platform
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import selector
+from homeassistant.helpers import entity_registry as er, selector
 from homeassistant.exceptions import HomeAssistantError
 
 from .api import ApiClient, CannotConnectError, CrestronHomeApiError, InvalidAuthError
@@ -31,6 +31,7 @@ from .calibration import (
     raw_to_pct,
     remove_calibration_option,
     update_calibration_option,
+    update_minimum_position,
     validate_anchors,
 )
 from .const import (
@@ -53,6 +54,7 @@ from .const import (
     PREDICTIVE_DEFAULT_ENABLED,
 )
 from .coordinator import Shade, ShadesCoordinator
+from .entity_ids import shade_entity_unique_id
 from .predictive_stop import PredictiveRuntime
 from .storage import PredictiveStopStore
 from .visual_groups import (
@@ -227,8 +229,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._config_entry = config_entry
 
-        base_options = dict(config_entry.options)
-        self._options: dict[str, Any] = copy.deepcopy(base_options)
+        self._starting_options = config_entry.options
+        self._options: dict[str, Any] = copy.deepcopy(dict(self._starting_options))
         if CONF_INVERT not in self._options:
             self._options[CONF_INVERT] = DEFAULT_INVERT
         if OPT_PREDICTIVE_STOP not in self._options:
@@ -240,14 +242,16 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._selected_shade_id: str | None = None
         self._working_anchors: list[dict[str, int]] | None = None
         self._working_invert_override: bool | None = None
+        self._working_minimum_position = 0
         self._selected_group_id: str | None = None
+        self._visual_group_assignment_fields: dict[str, str] = {}
         self._assisted_group_id: str | None = None
         self._assisted_members: list[str] = []
         self._assisted_target_percent: int | None = None
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings: list[str] = []
-        self._assisted_active_members: list[str] = []
+        self._assisted_staged_members: set[str] = set()
         self._assisted_feedback: dict[str, object] | None = None
         self._assisted_snapshot: dict[str, tuple[ShadeCalibration, bool]] | None = None
         self._assisted_last_run: AssistedCalibrationRun | None = None
@@ -304,19 +308,37 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             return store
         return None
 
-    def _shade_choices(self) -> dict[str, str]:
-        choices: dict[str, str] = {}
+    def _shade_names(
+        self, *, use_entity_names: bool = False, extra_ids: Iterable[str] = (),
+    ) -> dict[str, str]:
+        names: dict[str, str] = {}
         coordinator = self._coordinator
         if coordinator and coordinator.data:
             for shade_id, shade in sorted(coordinator.data.items()):
-                label = shade.name if shade.name else shade_id
-                if shade.name and shade.name != shade_id:
-                    label = f"{shade.name} ({shade_id})"
-                choices[shade_id] = label
+                names[shade_id] = shade.name or shade_id
         else:
-            for shade_id in sorted(self._calibration_collection.per_shade.keys()):
-                choices[shade_id] = shade_id
-        return choices
+            for shade_id in sorted(
+                self._calibration_collection.per_shade.keys()
+                | self._calibration_collection.minimum_positions.keys()
+            ):
+                names[shade_id] = shade_id
+        for shade_id in extra_ids:
+            names.setdefault(shade_id, shade_id)
+        if use_entity_names and names:
+            registry = er.async_get(self.hass)
+            for shade_id in names:
+                entity_id = registry.async_get_entity_id(
+                    Platform.COVER, DOMAIN, shade_entity_unique_id(self._config_entry, shade_id)
+                )
+                if entity_id and (entity := registry.async_get(entity_id)) and entity.name:
+                    names[shade_id] = entity.name
+        return names
+
+    def _shade_choices(self, *, use_entity_names: bool = False) -> dict[str, str]:
+        return {
+            shade_id: f"{name} ({shade_id})" if name != shade_id else shade_id
+            for shade_id, name in self._shade_names(use_entity_names=use_entity_names).items()
+        }
 
     def _visual_group_choices(self) -> dict[str, str]:
         return {
@@ -406,6 +428,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             {"pc": anchor[0], "raw": anchor[1]} for anchor in calibration.anchors
         ]
         self._working_invert_override = calibration.invert_override
+        self._working_minimum_position = self._calibration_collection.minimum_position(shade_id)
 
     def _anchors_from_input(self, user_input: Mapping[str, Any]) -> list[dict[str, int]]:
         assert self._working_anchors is not None
@@ -453,15 +476,27 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_finish(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        if self._config_entry.options is not self._starting_options:
+            return self.async_abort(reason="options_changed")
         return self.async_create_entry(title="", data=self._options)
 
     async def async_step_global_defaults(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._options[CONF_INVERT] = bool(user_input[CONF_INVERT])
-            self._calibration_collection = parse_calibration_options(self._options)
-            return await self.async_step_init()
+            invert = bool(user_input[CONF_INVERT])
+            try:
+                for shade_id, minimum in self._calibration_collection.minimum_positions.items():
+                    calibration = self._calibration_collection.for_shade(shade_id)
+                    if calibration.invert_override is None:
+                        calibration.minimum_raw_target(minimum, invert)
+            except InvalidCalibrationError as err:
+                errors[CONF_INVERT] = err.code
+            else:
+                self._options[CONF_INVERT] = invert
+                self._calibration_collection = parse_calibration_options(self._options)
+                return await self.async_step_init()
 
         data_schema = vol.Schema(
             {
@@ -474,12 +509,14 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="global_defaults",
             data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_visual_groups(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         self._selected_group_id = None
+        self._visual_group_assignment_fields.clear()
         menu: list[str] = ["visual_groups_create"]
         if self._visual_groups.groups:
             menu.extend(
@@ -634,10 +671,25 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_visual_groups_assign(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        shade_labels = self._shade_choices()
-        known_shades = sorted(set(shade_labels).union(self._visual_groups.membership))
+        fields = self._visual_group_assignment_fields
+        if not fields:
+            names = self._shade_names(
+                use_entity_names=True, extra_ids=self._visual_groups.membership,
+            )
+            counts = Counter(name.casefold() for name in names.values())
+            # Options displays the schema key for fields with no translation.
+            # Keep these keys mapped to IDs until the form is submitted.
+            for shade_id, name in sorted(
+                names.items(), key=lambda item: (item[1].casefold(), item[0]),
+            ):
+                label = f"Group for {name}"
+                if counts[name.casefold()] > 1:
+                    label = f"{label} ({shade_id})"
+                while label in fields:
+                    label = f"{label} ({shade_id})"
+                fields[label] = shade_id
 
-        if not known_shades:
+        if not fields:
             return await self.async_step_visual_groups()
 
         group_options = [
@@ -648,21 +700,20 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         group_options.insert(0, {"label": "Unassigned", "value": VISUAL_GROUP_UNASSIGNED})
 
         schema_dict: dict[Any, Any] = {}
-        for shade_id in known_shades:
+        for label, shade_id in fields.items():
             default = self._visual_groups.membership.get(shade_id, VISUAL_GROUP_UNASSIGNED)
             if default not in self._visual_groups.groups:
                 default = VISUAL_GROUP_UNASSIGNED
             schema_dict[
-                vol.Required(f"shade::{shade_id}", default=default)
+                vol.Required(label, default=default)
             ] = selector.selector({"select": {"options": group_options}})
 
         errors: dict[str, str] = {}
         if user_input is not None:
             new_membership: dict[str, str] = {}
             invalid = False
-            for shade_id in known_shades:
-                key = f"shade::{shade_id}"
-                selected = self._normalize_group_id(user_input.get(key))
+            for label, shade_id in fields.items():
+                selected = self._normalize_group_id(user_input.get(label))
                 if not selected or selected == VISUAL_GROUP_UNASSIGNED:
                     continue
                 if selected not in self._visual_groups.groups:
@@ -775,13 +826,17 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_init()
             if action == "undo":
                 if self._assisted_last_run and self._assisted_snapshot:
-                    self._assisted_restore_snapshot()
-                    status = self._assisted_status_text(
-                        "Assisted calibration undo applied",
-                        saved=self._assisted_last_run.saved,
-                        skipped=self._assisted_last_run.skipped,
-                    )
-                    self._assisted_last_run = None
+                    try:
+                        self._assisted_restore_snapshot()
+                    except InvalidCalibrationError as err:
+                        errors["base"] = err.code
+                    else:
+                        status = self._assisted_status_text(
+                            "Assisted calibration undo applied",
+                            saved=self._assisted_last_run.saved,
+                            skipped=self._assisted_last_run.skipped,
+                        )
+                        self._assisted_last_run = None
                 else:
                     errors["base"] = "assisted_no_undo"
             else:
@@ -999,10 +1054,13 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         errors: dict[str, str] = {}
-        choices = self._shade_choices()
+        choices = self._shade_choices(use_entity_names=True)
 
         if user_input is not None:
             try:
+                if self._selector_value(user_input.get("action")) == "back":
+                    return await self.async_step_init()
+
                 shade_raw = user_input.get("shade")
                 shade_id = self._normalize_shade_id(shade_raw)
                 if not shade_id:
@@ -1032,9 +1090,25 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                     }
                 }
             )
-            data_schema = vol.Schema({vol.Required("shade"): shade_selector})
         else:
-            data_schema = vol.Schema({vol.Required("shade"): str})
+            shade_selector = str
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional("shade"): shade_selector,
+                vol.Required("action", default="continue"): selector.selector(
+                    {
+                        "select": {
+                            "options": [
+                                {"value": "continue", "label": "Continue"},
+                                {"value": "back", "label": "Back to options"},
+                            ],
+                            "mode": "dropdown",
+                        }
+                    }
+                ),
+            }
+        )
 
         return self.async_show_form(
             step_id="select_shade",
@@ -1049,7 +1123,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_staged_members.clear()
 
     def _assisted_group_members(self, group_id: str) -> list[str]:
         members = [
@@ -1074,7 +1148,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_staged_members.clear()
         return True
 
     def _assisted_member_labels(self, members: Sequence[str]) -> list[str]:
@@ -1109,7 +1183,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def _assisted_perform_stage(self) -> None:
         coordinator = self._coordinator
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_staged_members.clear()
         if coordinator is None:
             self._assisted_stage_warnings.append("Controller unavailable")
             self._assisted_stage_sent = True
@@ -1129,7 +1203,6 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 continue
             available.append(shade_id)
 
-        self._assisted_active_members = available
         self._assisted_stage_sent = True
 
         if self._assisted_use_current_position or not available:
@@ -1141,15 +1214,49 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             return
 
         target = self._assisted_target_percent or 0
-        tasks = []
+        # Pending edits can change the raw mapping, but the writer still applies
+        # the saved limit. Do not stage a target it would have to replace.
+        active_calibrations = parse_calibration_options(self._config_entry.options)
+        targets = {}
         for shade_id in available:
             calibration = self._calibration_collection.for_shade(shade_id)
             invert = calibration.resolved_invert(self._calibration_collection.global_invert)
             raw = pct_to_raw(target, calibration.anchors, invert)
-            tasks.append(batcher.enqueue(shade_id, raw))
+            try:
+                raw = self._calibration_collection.limit_raw_target(shade_id, raw)
+                below_minimum = (
+                    target < self._calibration_collection.minimum_position(shade_id)
+                    or active_calibrations.limit_raw_target(shade_id, raw) != raw
+                )
+            except InvalidCalibrationError as err:
+                warning = str(err)
+            else:
+                if not below_minimum:
+                    targets[shade_id] = raw
+                    continue
+                warning = "move would go below its minimum position"
+            label = self._assisted_member_labels([shade_id])[0]
+            self._assisted_stage_warnings.append(f"{label}: {warning}")
 
-        if tasks:
-            await asyncio.gather(*tasks)
+        if targets:
+            results = await asyncio.gather(
+                *(
+                    batcher.enqueue(shade_id, raw, require_exact=True)
+                    for shade_id, raw in targets.items()
+                ),
+                return_exceptions=True,
+            )
+            failures = {
+                shade_id: result for shade_id, result in zip(targets, results, strict=True)
+                if isinstance(result, BaseException)
+            }
+            self._assisted_staged_members.update(targets.keys() - failures.keys())
+            for shade_id, error in failures.items():
+                if isinstance(error, HomeAssistantError):
+                    label = self._assisted_member_labels([shade_id])[0]
+                    self._assisted_stage_warnings.append(f"{label}: {error}")
+            if failures:
+                raise next(iter(failures.values()))
             coordinator.burst()
 
     def _assisted_stage_positions(self) -> list[str]:
@@ -1186,7 +1293,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         for shade_id in self._assisted_members:
             shade = coordinator.data.get(shade_id)
-            if not isinstance(shade, Shade) or shade.position is None:
+            was_staged = shade_id in self._assisted_staged_members
+            if (
+                not isinstance(shade, Shade)
+                or shade.position is None
+                or (not self._assisted_use_current_position and not was_staged)
+            ):
                 skipped.append(shade_id)
                 continue
             calibration = self._calibration_collection.for_shade(shade_id)
@@ -1202,10 +1314,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 calibration,
                 shade_id in self._calibration_collection.per_shade,
             )
-            new_values[shade_id] = ShadeCalibration(
+            updated_calibration = ShadeCalibration(
                 anchors=anchors,
                 invert_override=calibration.invert_override,
             )
+            if minimum := self._calibration_collection.minimum_position(shade_id):
+                updated_calibration.minimum_raw_target(
+                    minimum, self._calibration_collection.global_invert,
+                )
+            new_values[shade_id] = updated_calibration
             saved.append(shade_id)
 
         for shade_id in saved:
@@ -1244,6 +1361,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         snapshot = self._assisted_snapshot
         if not snapshot:
             return
+        # Check the entire snapshot before mutating any pending curves.
+        for shade_id, (calibration, _) in snapshot.items():
+            if minimum := self._calibration_collection.minimum_position(shade_id):
+                calibration.minimum_raw_target(
+                    minimum, self._calibration_collection.global_invert,
+                )
         for shade_id, (calibration, had_entry) in snapshot.items():
             if not had_entry and calibration == ShadeCalibration():
                 remove_calibration_option(self._options, shade_id)
@@ -1268,6 +1391,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 self._working_invert_override = self._invert_from_form(
                     user_input.get("invert_axis")
                 )
+                self._working_minimum_position = user_input["minimum_position"]
                 action_raw = user_input.get("action")
                 if action_raw is None:
                     action = "save"
@@ -1326,14 +1450,18 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
                 if action == "save":
                     try:
-                        anchors_tuple = validate_anchors(self._working_anchors)
+                        calibration = ShadeCalibration(
+                            anchors=validate_anchors(self._working_anchors),
+                            invert_override=self._working_invert_override,
+                        )
+                        if self._working_minimum_position:
+                            calibration.minimum_raw_target(
+                                self._working_minimum_position,
+                                self._calibration_collection.global_invert,
+                            )
                     except InvalidCalibrationError as err:
                         errors["base"] = err.code
                     else:
-                        calibration = ShadeCalibration(
-                            anchors=anchors_tuple,
-                            invert_override=self._working_invert_override,
-                        )
                         if (
                             calibration.anchors == DEFAULT_ANCHORS
                             and calibration.invert_override is None
@@ -1345,6 +1473,10 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                             update_calibration_option(
                                 self._options, self._selected_shade_id, calibration
                             )
+                        update_minimum_position(
+                            self._options, self._selected_shade_id,
+                            self._working_minimum_position,
+                        )
                         self._calibration_collection = parse_calibration_options(
                             self._options
                         )
@@ -1395,6 +1527,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             "invert_axis",
             default=self._invert_to_form(self._working_invert_override),
         )] = invert_selector
+        schema_dict[vol.Required(
+            "minimum_position", default=self._working_minimum_position,
+        )] = vol.All(
+            vol.Coerce(int),
+            vol.Range(min=CAL_ANCHOR_PC_MIN, max=CAL_ANCHOR_PC_MAX),
+        )
 
         action_selector = selector.selector(
             {
