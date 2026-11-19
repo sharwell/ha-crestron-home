@@ -4,7 +4,8 @@ In Home Assistant, open **Settings → Devices & services → Crestron Home** an
 select **Configure** on the integration entry. **Save changes** on the top-level
 Options menu is the step that persists pending calibration. Closing the dialog
 before that step discards pending calibration. Automatic staging can move shades
-before any calibration is saved.
+before any calibration is saved. If another dialog saves changes first, reopen
+Options and re-enter any edits you still want to make.
 
 ## Combined diagram
 
@@ -61,7 +62,8 @@ calibration.
 2. Accept the suggested midpoint of the largest remaining gap or enter your own
    target percentage. **Automatic** stages a move when you continue. Choose
    **From current location** to work with the current positions without sending
-   a staging move.
+   a staging move. If the saved minimum prevents the requested move before it
+   is sent, the shade is skipped for that recording.
 3. On the alignment screen, align the shades as needed, choose **Record
    anchors**, and select **Continue**. The integration adds new or revised
    anchors to the pending calibration. It skips unchanged anchors and shades
@@ -71,6 +73,6 @@ calibration.
    groups** returns without recording that attempt and keeps earlier pending
    changes.
 5. On group selection, choose **Undo last** to reverse the most recent
-   recording if it changed anchors. This restores the previous pending
-   calibration. To finish, choose **Back** on group selection and then
-   **Save changes** on the top-level Options menu.
+   recording if it changed anchors. If an earlier curve cannot reach a shade's
+   pending minimum, the current curves stay in place. To finish, choose **Back**
+   on group selection and then **Save changes** on the top-level Options menu.

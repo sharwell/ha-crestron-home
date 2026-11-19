@@ -229,8 +229,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._config_entry = config_entry
 
-        base_options = dict(config_entry.options)
-        self._options: dict[str, Any] = copy.deepcopy(base_options)
+        self._starting_options = config_entry.options
+        self._options: dict[str, Any] = copy.deepcopy(dict(self._starting_options))
         if CONF_INVERT not in self._options:
             self._options[CONF_INVERT] = DEFAULT_INVERT
         if OPT_PREDICTIVE_STOP not in self._options:
@@ -476,6 +476,8 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_finish(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        if self._config_entry.options is not self._starting_options:
+            return self.async_abort(reason="options_changed")
         return self.async_create_entry(title="", data=self._options)
 
     async def async_step_global_defaults(
@@ -824,13 +826,17 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_init()
             if action == "undo":
                 if self._assisted_last_run and self._assisted_snapshot:
-                    self._assisted_restore_snapshot()
-                    status = self._assisted_status_text(
-                        "Assisted calibration undo applied",
-                        saved=self._assisted_last_run.saved,
-                        skipped=self._assisted_last_run.skipped,
-                    )
-                    self._assisted_last_run = None
+                    try:
+                        self._assisted_restore_snapshot()
+                    except InvalidCalibrationError as err:
+                        errors["base"] = err.code
+                    else:
+                        status = self._assisted_status_text(
+                            "Assisted calibration undo applied",
+                            saved=self._assisted_last_run.saved,
+                            skipped=self._assisted_last_run.skipped,
+                        )
+                        self._assisted_last_run = None
                 else:
                     errors["base"] = "assisted_no_undo"
             else:
@@ -1235,7 +1241,10 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         if targets:
             results = await asyncio.gather(
-                *(batcher.enqueue(shade_id, raw) for shade_id, raw in targets.items()),
+                *(
+                    batcher.enqueue(shade_id, raw, require_exact=True)
+                    for shade_id, raw in targets.items()
+                ),
                 return_exceptions=True,
             )
             failures = {
@@ -1243,6 +1252,10 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 if isinstance(result, BaseException)
             }
             self._assisted_stage_skips.update(failures)
+            for shade_id, error in failures.items():
+                if isinstance(error, HomeAssistantError):
+                    label = self._assisted_member_labels([shade_id])[0]
+                    self._assisted_stage_warnings.append(f"{label}: {error}")
             if failures:
                 raise next(iter(failures.values()))
             coordinator.burst()
@@ -1348,6 +1361,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         snapshot = self._assisted_snapshot
         if not snapshot:
             return
+        # Check the entire snapshot before mutating any pending curves.
+        for shade_id, (calibration, _) in snapshot.items():
+            if minimum := self._calibration_collection.minimum_position(shade_id):
+                calibration.minimum_raw_target(
+                    minimum, self._calibration_collection.global_invert,
+                )
         for shade_id, (calibration, had_entry) in snapshot.items():
             if not had_entry and calibration == ShadeCalibration():
                 remove_calibration_option(self._options, shade_id)

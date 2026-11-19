@@ -28,6 +28,7 @@ from custom_components.crestron_home.const import (
     DOMAIN,
     OPT_CALIBRATION,
     OPT_MINIMUM_POSITIONS,
+    OPT_PREDICTIVE_STOP,
     PREDICTIVE_STORAGE_KEY_PREFIX,
     PREDICTIVE_STORAGE_VERSION,
 )
@@ -360,6 +361,117 @@ async def _save_shade_minimum(hass: HomeAssistant, entry: ConfigEntry, minimum: 
     )
     assert picker["step_id"] == "select_shade"
     await _finish_manual(hass, flow_id)
+
+
+@pytest.mark.asyncio
+async def test_stale_options_save_preserves_newer_minimum(hass, calibration):
+    entry, controller, coordinator = calibration
+    options = hass.config_entries.options
+    earlier = await options.async_init(entry.entry_id)
+    flow_id = earlier["flow_id"]
+    await options.async_configure(flow_id, {"next_step_id": "predictive_stop"})
+    await options.async_configure(flow_id, {OPT_PREDICTIVE_STOP: False})
+    await _save_shade_minimum(hass, entry, 10)
+
+    result = await options.async_configure(flow_id, {"next_step_id": "finish"})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "options_changed"
+    assert entry.options[OPT_MINIMUM_POSITIONS] == {SHADE_ID: 10}
+    assert entry.options[OPT_PREDICTIVE_STOP] is True
+    shade = CrestronHomeShade(coordinator, entry, SHADE_ID)
+    await asyncio.wait_for(shade.async_close_cover(), timeout=5)
+    assert controller.writes == [[{"id": SHADE_ID, "position": 6554}]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        CONF_INVERT: False,
+        OPT_CALIBRATION: {SHADE_ID: {
+            "anchors": [[0, 0], [20, 10000], [100, 10000]],
+        }},
+    }],
+    indirect=True,
+)
+async def test_assisted_undo_preserves_curve_needed_by_pending_minimum(hass, calibration):
+    entry, controller, coordinator = calibration
+    options = hass.config_entries.options
+    flow_id = await _start_assisted(hass, entry)
+    await _record_anchor(hass, flow_id, controller, coordinator, percent=20, raw=8000)
+    await options.async_configure(flow_id, {"action": "back"})
+    await options.async_configure(flow_id, {"group": GROUP_ID, "action": "back"})
+    await options.async_configure(flow_id, {"next_step_id": "select_shade"})
+    await options.async_configure(flow_id, {"shade": SHADE_ID})
+    saved = await options.async_configure(flow_id, {"minimum_position": 40, "action": "save"})
+    assert saved["step_id"] == "select_shade"
+    await options.async_configure(flow_id, {"action": "back"})
+    await options.async_configure(flow_id, {"next_step_id": "assisted_calibration"})
+
+    undo = await options.async_configure(flow_id, {"group": GROUP_ID, "action": "undo"})
+    assert undo["errors"] == {"base": "minimum_position_unreachable"}
+    await _finish_assisted(hass, flow_id)
+    assert entry.options[OPT_MINIMUM_POSITIONS] == {SHADE_ID: 40}
+    assert entry.options[OPT_CALIBRATION][SHADE_ID]["anchors"] == [
+        {"pc": 0, "raw": 0}, {"pc": 20, "raw": 8000}, {"pc": 100, "raw": 10000},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        OPT_VISUAL_GROUPS: {
+            "version": 1,
+            "groups": {GROUP_ID: {"name": "Lounge"}},
+            "membership": {SHADE_ID: GROUP_ID, "shade-2": GROUP_ID},
+        },
+    }],
+    indirect=True,
+)
+async def test_assisted_move_skips_anchor_when_minimum_changes_in_queue(
+    hass, calibration, monkeypatch,
+):
+    entry, controller, coordinator = calibration
+    controller.position = 4200
+    controller.other_shades.append({
+        "id": "shade-2", "name": "Second shade", "position": 4300,
+        "connectionStatus": "connected",
+    })
+    await coordinator.async_refresh()
+    flow_id = await _start_assisted(hass, entry)
+    options = hass.config_entries.options
+    batcher = hass.data[DOMAIN][entry.entry_id][DATA_WRITE_BATCHER]
+    queued = asyncio.Event()
+
+    # Hold the batching timer so the second dialog can save before dispatch.
+    with monkeypatch.context() as hold:
+        hold.setattr(batcher, "_schedule_timer", lambda **_kwargs: queued.set())
+        move = asyncio.create_task(options.async_configure(
+            flow_id, {"target_percent": 5, "mode": "automatic", "action": "stage"},
+        ))
+        try:
+            await asyncio.wait_for(queued.wait(), timeout=5)
+            await _save_shade_minimum(hass, entry, 10)
+            await asyncio.wait_for(batcher.async_flush(), timeout=5)
+            stage = await asyncio.wait_for(move, timeout=5)
+        finally:
+            if not move.done():
+                move.cancel()
+                await asyncio.wait_for(
+                    asyncio.gather(move, return_exceptions=True), timeout=5,
+                )
+
+    assert stage["errors"] == {"base": "assisted_stage_failed"}
+    assert "minimum position changed" in stage["description_placeholders"]["warnings"]
+    assert controller.writes == [[{"id": "shade-2", "position": 3277}]]
+    result = await options.async_configure(flow_id, {"action": "record"})
+    assert "skipped Test shade" in result["description_placeholders"]["status"]
+    assert coordinator.assisted_history[-1]["saved"] == ["shade-2"]
+    assert coordinator.assisted_history[-1]["skipped"] == [SHADE_ID]
+    options.async_abort(flow_id)
+    assert entry.options[OPT_MINIMUM_POSITIONS] == {SHADE_ID: 10}
+    assert OPT_CALIBRATION not in entry.options
 
 
 @pytest.mark.asyncio

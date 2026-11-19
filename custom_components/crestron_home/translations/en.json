@@ -205,7 +205,7 @@
       "invalid_group": "Select a valid group.",
       "assisted_no_undo": "No assisted calibration run is available to undo.",
       "assisted_empty_group": "Assign shades to this group before starting an assisted run.",
-      "assisted_stage_failed": "Failed to stage the shades. Verify the controller connection and try again.",
+      "assisted_stage_failed": "One or more shades could not be staged. Review the warnings before recording anchors.",
       "anchors_too_few": "Provide at least two anchors (0% and 100%).",
       "anchors_endpoint": "The first anchor must start at 0% and the last must end at 100%.",
       "anchors_pc_range": "Percent values must stay between 0 and 100 and increase for each anchor.",
@@ -213,6 +213,9 @@
       "anchors_pc_order": "Anchor percentages must increase for each entry.",
       "anchors_raw_monotonic": "Raw values must never decrease between anchors.",
       "minimum_position_unreachable": "The calibration cannot reach the minimum position. Adjust the anchors or lower the minimum."
+    },
+    "abort": {
+      "options_changed": "Crestron Home options changed while this dialog was open. Reopen Options to make your changes."
     }
   },
   "exceptions": {
@@ -224,6 +227,9 @@
     },
     "error_minimum_position_unreachable": {
       "message": "The shade calibration cannot reach the minimum position."
+    },
+    "error_exact_target_superseded": {
+      "message": "Another command changed the shade target before it could be sent."
     },
     "error_partial_write": {
       "message": "Shade command failed for {shade_id}: {reason}"

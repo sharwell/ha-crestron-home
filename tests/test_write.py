@@ -114,8 +114,9 @@ def test_write_retry_rechecks_current_minimum(monkeypatch, raise_minimum):
     asyncio.run(_async_test())
 
 
-def test_batcher_deduplicates_latest_position() -> None:
-    """The batcher should send only the latest command per shade."""
+@pytest.mark.parametrize("require_exact", [False, True], ids=["coalesced", "exact"])
+def test_batcher_deduplicates_latest_position(require_exact: bool) -> None:
+    """Send the latest target and report superseded exact requests as failures."""
 
     async def _async_test() -> None:
         loop = asyncio.get_running_loop()
@@ -133,10 +134,11 @@ def test_batcher_deduplicates_latest_position() -> None:
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=50, on_success=_on_success)
         try:
-            await asyncio.wait_for(
+            results = await asyncio.wait_for(
                 asyncio.gather(
-                    batcher.enqueue("shade-1", 1000),
+                    batcher.enqueue("shade-1", 1000, require_exact=require_exact),
                     batcher.enqueue("shade-1", 2000),
+                    return_exceptions=True,
                 ),
                 timeout=5,
             )
@@ -145,6 +147,12 @@ def test_batcher_deduplicates_latest_position() -> None:
 
         assert calls == [[{"id": "shade-1", "position": 2000}]]
         assert len(callback_calls) == 1
+        assert results[1] is None
+        if require_exact:
+            assert isinstance(results[0], HomeAssistantError)
+            assert "Another command changed the shade target" in str(results[0])
+        else:
+            assert results[0] is None
 
     asyncio.run(_async_test())
 

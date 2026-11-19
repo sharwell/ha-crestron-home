@@ -31,6 +31,13 @@ _LOGGER = logging.getLogger(__name__)
 class _QueuedItem:
     shade_id: str
     position: int
+    require_exact: bool
+
+
+@dataclass(slots=True)
+class _WriteWaiter:
+    future: asyncio.Future[None]
+    exact_position: int | None
 
 
 class ShadeWriteBatcher:
@@ -59,21 +66,28 @@ class ShadeWriteBatcher:
         self._get_calibrations = get_calibrations
         self._lock = asyncio.Lock()
         self._queue: dict[str, _QueuedItem] = {}
-        self._waiters: dict[str, list[asyncio.Future[None]]] = defaultdict(list)
+        self._waiters: dict[str, list[_WriteWaiter]] = defaultdict(list)
         self._timer: asyncio.TimerHandle | None = None
         self._closed = False
         self._on_success = on_success
         self._on_flush = on_flush
 
-    async def enqueue(self, shade_id: str, position: int) -> None:
-        """Enqueue a shade write request and wait for completion."""
+    async def enqueue(
+        self, shade_id: str, position: int, *, require_exact: bool = False,
+    ) -> None:
+        """Enqueue a raw shade target and wait for the controller's result.
+
+        With require_exact, report success only for the requested target.
+        Skip the move if its target would need clamping, and fail this caller
+        if a coalesced command replaces it with a different target.
+        """
 
         if self._closed:
             raise HomeAssistantError(self._translate("error_write_disabled"))
 
         future: asyncio.Future[None] = self._hass.loop.create_future()
-        self._queue[shade_id] = _QueuedItem(shade_id=shade_id, position=position)
-        self._waiters[shade_id].append(future)
+        self._queue[shade_id] = _QueuedItem(shade_id, position, require_exact)
+        self._waiters[shade_id].append(_WriteWaiter(future, position if require_exact else None))
 
         self._schedule_timer(immediate=len(self._queue) >= self._max_items)
         await future
@@ -127,34 +141,61 @@ class ShadeWriteBatcher:
                         if first_error is None:
                             first_error = err
             except asyncio.CancelledError:
-                for futures in waiters.values():
-                    for future in futures:
-                        future.cancel()
+                for shade_waiters in waiters.values():
+                    for waiter in shade_waiters:
+                        waiter.future.cancel()
                 raise
 
             if first_error is not None:
                 raise first_error
 
+    def _prepare_targets(
+        self,
+        items: list[_QueuedItem],
+        waiters: dict[str, list[_WriteWaiter]],
+        calibrations: CalibrationCollection | None,
+    ) -> dict[str, int]:
+        targets: dict[str, int] = {}
+        for item in items:
+            shade_id = item.shade_id
+            position = (
+                calibrations.limit_raw_target(shade_id, item.position)
+                if calibrations else item.position
+            )
+            if item.require_exact and position != item.position:
+                self._reject_waiters(
+                    waiters.pop(shade_id),
+                    HomeAssistantError(self._translate("error_minimum_position_changed")),
+                )
+                continue
+            for waiter in waiters[shade_id]:
+                if (
+                    waiter.exact_position is not None
+                    and waiter.exact_position != position
+                    and not waiter.future.done()
+                ):
+                    waiter.future.set_exception(HomeAssistantError(
+                        self._translate("error_exact_target_superseded")
+                    ))
+            targets[shade_id] = position
+        return targets
+
     async def _send_batch(
         self,
         items: list[_QueuedItem],
-        waiters: dict[str, list[asyncio.Future[None]]],
+        waiters: dict[str, list[_WriteWaiter]],
     ) -> None:
         get_calibrations = self._get_calibrations
         payload_items = []
-        ids = [item.shade_id for item in items]
-
         status: str | None = None
         try:
             calibrations = get_calibrations() if get_calibrations else None
-            positions = [
-                calibrations.limit_raw_target(item.shade_id, item.position)
-                if calibrations else item.position
-                for item in items
-            ]
+            targets = self._prepare_targets(items, waiters, calibrations)
+            if not targets:
+                return
             payload_items = [
                 {"id": shade_id, "position": position}
-                for shade_id, position in zip(ids, positions, strict=True)
+                for shade_id, position in targets.items()
             ]
             if get_calibrations is None:
                 response = await self._client.async_set_shade_positions(payload_items)
@@ -163,7 +204,7 @@ class ShadeWriteBatcher:
                     current = get_calibrations()
                     if any(
                         current.limit_raw_target(shade_id, position) != position
-                        for shade_id, position in zip(ids, positions, strict=True)
+                        for shade_id, position in targets.items()
                     ):
                         raise HomeAssistantError(self._translate("error_minimum_position_changed"))
 
@@ -197,6 +238,7 @@ class ShadeWriteBatcher:
                 except Exception:  # pragma: no cover - defensive safeguard
                     _LOGGER.exception("Unhandled exception from flush callback")
 
+        ids = list(targets)
         status = response.status
         _LOGGER.debug(
             "POST %s items=%s ids=%s status=%s",
@@ -236,34 +278,32 @@ class ShadeWriteBatcher:
                         reason=result.message or result.status,
                     )
                 )
-                for future in waiters.get(shade_id, []):
-                    if not future.done():
-                        future.set_exception(error)
+                self._reject_waiters(waiters[shade_id], error)
             else:
-                for future in waiters.get(shade_id, []):
-                    if not future.done():
-                        future.set_result(None)
+                for waiter in waiters[shade_id]:
+                    if not waiter.future.done():
+                        waiter.future.set_result(None)
 
         if failed:
             self._log_partial_failure(failed)
         else:
             self._resolve_remaining(waiters)
 
-    def _reject_all(
-        self,
-        waiters: dict[str, list[asyncio.Future[None]]],
-        err: Exception,
-    ) -> None:
-        for futures in waiters.values():
-            for future in futures:
-                if not future.done():
-                    future.set_exception(err)
+    @staticmethod
+    def _reject_waiters(waiters: list[_WriteWaiter], err: Exception) -> None:
+        for waiter in waiters:
+            if not waiter.future.done():
+                waiter.future.set_exception(err)
 
-    def _resolve_remaining(self, waiters: dict[str, list[asyncio.Future[None]]]) -> None:
-        for futures in waiters.values():
-            for future in futures:
-                if not future.done():
-                    future.set_result(None)
+    def _reject_all(self, waiters: dict[str, list[_WriteWaiter]], err: Exception) -> None:
+        for shade_waiters in waiters.values():
+            self._reject_waiters(shade_waiters, err)
+
+    def _resolve_remaining(self, waiters: dict[str, list[_WriteWaiter]]) -> None:
+        for shade_waiters in waiters.values():
+            for waiter in shade_waiters:
+                if not waiter.future.done():
+                    waiter.future.set_result(None)
 
     def _log_partial_failure(self, failed: dict[str, ShadeCommandResult]) -> None:
         entries = [
@@ -298,6 +338,7 @@ class ShadeWriteBatcher:
                 "error_partial_write": "Shade command failed for {shade_id}: {reason}",
                 "error_minimum_position_changed": "The shade minimum position changed. Retry the command.",
                 "error_minimum_position_unreachable": "The shade calibration cannot reach the minimum position.",
+                "error_exact_target_superseded": "Another command changed the shade target before it could be sent.",
             }
             template = fallback.get(key, key)
         try:
