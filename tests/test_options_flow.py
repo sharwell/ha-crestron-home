@@ -14,6 +14,8 @@ from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigFlowR
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er, frame
+from homeassistant.helpers.config_validation import custom_serializer
+from probatio import to_field_list
 
 from custom_components.crestron_home.api import ShadeCommandResponse
 from custom_components.crestron_home.calibration import parse_calibration_options
@@ -271,6 +273,80 @@ async def _finish_manual(hass: HomeAssistant, flow_id: str) -> None:
     assert menu["type"] is FlowResultType.MENU
     result = await options.async_configure(flow_id, {"next_step_id": "finish"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def _open_group_assignment(hass: HomeAssistant, entry: ConfigEntry) -> ConfigFlowResult:
+    options = hass.config_entries.options
+    menu = await options.async_init(entry.entry_id)
+    flow_id = menu["flow_id"]
+    await options.async_configure(flow_id, {"next_step_id": "visual_groups"})
+    form = await options.async_configure(flow_id, {"next_step_id": "visual_groups_assign"})
+    assert form["step_id"] == "visual_groups_assign"
+    return form
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        OPT_VISUAL_GROUPS: {
+            "version": 1,
+            "groups": {GROUP_ID: {"name": "Lounge"}, "study": {"name": "Study"}},
+            "membership": {SHADE_ID: GROUP_ID},
+        },
+    }],
+    indirect=True,
+)
+async def test_visual_group_assignment_labels_distinct_shades_and_preserves_ids(hass, calibration):
+    entry, controller, coordinator = calibration
+    controller.other_shades.extend([
+        {"id": "shade-2", "name": "South shade", "position": 0, "connectionStatus": "connected"},
+        {"id": "shade-3", "name": "South shade", "position": 0, "connectionStatus": "connected"},
+        {"id": "shade-4", "name": "", "position": 0, "connectionStatus": "connected"},
+    ])
+    await coordinator.async_refresh()
+    registry = er.async_get(hass)
+    entity = registry.async_get_or_create(
+        "cover", DOMAIN, f"shade:{entry.entry_id.lower()}:{SHADE_ID}",
+        suggested_object_id="test_shade", config_entry=entry,
+    )
+    registry.async_update_entity(entity.entity_id, name="Window seat")
+
+    options = hass.config_entries.options
+    form = await _open_group_assignment(hass, entry)
+    fields = to_field_list(form["data_schema"], custom_serializer=custom_serializer)
+    assert {field["name"] for field in fields} == {
+        "Group for Window seat",
+        "Group for South shade (shade-2)",
+        "Group for South shade (shade-3)",
+        "Group for Shade shade-4",
+    }
+    assert all("select" in field["selector"] for field in fields)
+
+    # A name change between rendering and submission must not remap the field.
+    registry.async_update_entity(entity.entity_id, name="Window shade")
+    flow_id = form["flow_id"]
+    menu = await options.async_configure(flow_id, {
+        "Group for Window seat": "study",
+        "Group for South shade (shade-2)": GROUP_ID,
+    })
+    assert menu["step_id"] == "visual_groups"
+    assert entry.options[OPT_VISUAL_GROUPS]["membership"] == {SHADE_ID: GROUP_ID}
+    await options.async_configure(flow_id, {"next_step_id": "visual_groups_back"})
+    result = await options.async_configure(flow_id, {"next_step_id": "finish"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[OPT_VISUAL_GROUPS]["membership"] == {
+        SHADE_ID: "study", "shade-2": GROUP_ID,
+    }
+
+    reopened = await _open_group_assignment(hass, entry)
+    fields = to_field_list(reopened["data_schema"], custom_serializer=custom_serializer)
+    defaults = {field["name"]: field["default"] for field in fields}
+    assert "Group for Window seat" not in defaults
+    assert defaults["Group for Window shade"] == "study"
+    assert defaults["Group for South shade (shade-2)"] == GROUP_ID
+    assert defaults["Group for South shade (shade-3)"] != GROUP_ID
+    options.async_abort(reopened["flow_id"])
 
 
 async def _save_shade_minimum(hass: HomeAssistant, entry: ConfigEntry, minimum: int) -> None:

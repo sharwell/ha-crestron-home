@@ -5,9 +5,9 @@ import asyncio
 import copy
 import logging
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import voluptuous as vol
@@ -244,6 +244,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._working_invert_override: bool | None = None
         self._working_minimum_position = 0
         self._selected_group_id: str | None = None
+        self._visual_group_assignment_fields: dict[str, str] = {}
         self._assisted_group_id: str | None = None
         self._assisted_members: list[str] = []
         self._assisted_target_percent: int | None = None
@@ -307,30 +308,37 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             return store
         return None
 
-    def _shade_choices(self, *, use_entity_names: bool = False) -> dict[str, str]:
-        choices: dict[str, str] = {}
+    def _shade_names(
+        self, *, use_entity_names: bool = False, extra_ids: Iterable[str] = (),
+    ) -> dict[str, str]:
+        names: dict[str, str] = {}
         coordinator = self._coordinator
         if coordinator and coordinator.data:
             for shade_id, shade in sorted(coordinator.data.items()):
-                label = shade.name if shade.name else shade_id
-                if shade.name and shade.name != shade_id:
-                    label = f"{shade.name} ({shade_id})"
-                choices[shade_id] = label
+                names[shade_id] = shade.name or shade_id
         else:
             for shade_id in sorted(
                 self._calibration_collection.per_shade.keys()
                 | self._calibration_collection.minimum_positions.keys()
             ):
-                choices[shade_id] = shade_id
-        if use_entity_names and choices:
+                names[shade_id] = shade_id
+        for shade_id in extra_ids:
+            names.setdefault(shade_id, shade_id)
+        if use_entity_names and names:
             registry = er.async_get(self.hass)
-            for shade_id in choices:
+            for shade_id in names:
                 entity_id = registry.async_get_entity_id(
                     Platform.COVER, DOMAIN, shade_entity_unique_id(self._config_entry, shade_id)
                 )
                 if entity_id and (entity := registry.async_get(entity_id)) and entity.name:
-                    choices[shade_id] = f"{entity.name} ({shade_id})"
-        return choices
+                    names[shade_id] = entity.name
+        return names
+
+    def _shade_choices(self, *, use_entity_names: bool = False) -> dict[str, str]:
+        return {
+            shade_id: f"{name} ({shade_id})" if name != shade_id else shade_id
+            for shade_id, name in self._shade_names(use_entity_names=use_entity_names).items()
+        }
 
     def _visual_group_choices(self) -> dict[str, str]:
         return {
@@ -495,6 +503,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         self._selected_group_id = None
+        self._visual_group_assignment_fields.clear()
         menu: list[str] = ["visual_groups_create"]
         if self._visual_groups.groups:
             menu.extend(
@@ -649,10 +658,25 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_visual_groups_assign(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        shade_labels = self._shade_choices()
-        known_shades = sorted(set(shade_labels).union(self._visual_groups.membership))
+        fields = self._visual_group_assignment_fields
+        if not fields:
+            names = self._shade_names(
+                use_entity_names=True, extra_ids=self._visual_groups.membership,
+            )
+            counts = Counter(name.casefold() for name in names.values())
+            # Options displays the schema key for fields with no translation.
+            # Keep these keys mapped to IDs until the form is submitted.
+            for shade_id, name in sorted(
+                names.items(), key=lambda item: (item[1].casefold(), item[0]),
+            ):
+                label = f"Group for {name}"
+                if counts[name.casefold()] > 1:
+                    label = f"{label} ({shade_id})"
+                while label in fields:
+                    label = f"{label} ({shade_id})"
+                fields[label] = shade_id
 
-        if not known_shades:
+        if not fields:
             return await self.async_step_visual_groups()
 
         group_options = [
@@ -663,21 +687,20 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         group_options.insert(0, {"label": "Unassigned", "value": VISUAL_GROUP_UNASSIGNED})
 
         schema_dict: dict[Any, Any] = {}
-        for shade_id in known_shades:
+        for label, shade_id in fields.items():
             default = self._visual_groups.membership.get(shade_id, VISUAL_GROUP_UNASSIGNED)
             if default not in self._visual_groups.groups:
                 default = VISUAL_GROUP_UNASSIGNED
             schema_dict[
-                vol.Required(f"shade::{shade_id}", default=default)
+                vol.Required(label, default=default)
             ] = selector.selector({"select": {"options": group_options}})
 
         errors: dict[str, str] = {}
         if user_input is not None:
             new_membership: dict[str, str] = {}
             invalid = False
-            for shade_id in known_shades:
-                key = f"shade::{shade_id}"
-                selected = self._normalize_group_id(user_input.get(key))
+            for label, shade_id in fields.items():
+                selected = self._normalize_group_id(user_input.get(label))
                 if not selected or selected == VISUAL_GROUP_UNASSIGNED:
                     continue
                 if selected not in self._visual_groups.groups:

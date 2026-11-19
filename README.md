@@ -68,6 +68,9 @@ Use **Options → Visual groups** to put shades that should finish together in t
 same group. With no explicit groups, Predictive Stop treats all shades as one
 group for alignment. Once groups are configured, Predictive Stop aligns shades
 within each group, and unassigned shades are handled independently.
+Under **Assign shades**, choose a group beside each shade's name. If names
+match, the shade IDs distinguish them. Use **Save changes** on the top-level
+Options menu to apply the assignments.
 
 ## Calibration
 
