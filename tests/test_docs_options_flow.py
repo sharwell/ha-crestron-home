@@ -16,6 +16,7 @@ def test_options_flow_labels_the_top_level_save_and_navigation_actions() -> None
 
     labels = (
         "Save calibration",
+        "Back to options",
         "Record anchors",
         "Change group",
         "Back to groups",

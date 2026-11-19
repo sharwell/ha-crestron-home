@@ -11,12 +11,15 @@ before any calibration is saved.
 ```mermaid
 flowchart TD
     accTitle: Calibration save and exit paths
-    accDescr: Manual edits stay pending at the shade picker, which has no route back to Options. For assisted calibration, return through group selection and choose Save changes. Closing the dialog discards pending edits.
+    accDescr: Manual edits return through the shade picker. Assisted edits return through group selection. Save changes on the top-level Options menu commits pending edits. Closing the dialog discards them.
 
     options["Crestron Home options"]
     options -->|Calibrate a shade| manual["Select a shade and edit its curve"]
-    manual -->|Save calibration| picker["Shade picker<br/>Valid curve is pending<br/>No route back to Options"]
-    manual -->|Back| discardEdit["Shade picker<br/>Current edit discarded"]
+    manual -->|Save calibration| pendingCurve["Valid curve is pending"]
+    manual -->|Back| discardEdit["Current edit discarded"]
+    pendingCurve --> picker["Shade picker"]
+    discardEdit --> picker
+    picker -->|Back to options| optionsMenu
     picker -.->|Close dialog| discarded(["Pending calibration discarded"])
 
     options -->|Assisted calibration| start["Select a visual group and target"]
@@ -42,9 +45,9 @@ flowchart TD
    edit, choose **Back** and select **Apply**. This also returns to the shade
    picker and leaves any earlier pending edits intact.
 
-The shade picker currently has no route back to the top-level Options menu.
-Manual calibration stays pending, and closing the dialog discards it. See the
-[manual calibration save issue](https://github.com/sharwell/ha-crestron-home/issues/51).
+From the shade picker, choose **Back to options** and select **Continue**.
+Choose **Save changes** on the top-level Options menu to apply the pending
+calibration.
 
 ## Assisted calibration flow
 

@@ -73,9 +73,8 @@ shade's calibration to both reported positions and position commands.
   ascending order, and use raw values that stay the same or increase. Add or
   remove interior anchors as needed, or select **Reset to defaults** to restore
   the default curve. **Save calibration** validates the curve and adds it to the
-  pending changes. The shade picker currently has no route back to the Options
-  menu, so closing the dialog discards these edits.
-  [Manual calibration save issue](https://github.com/sharwell/ha-crestron-home/issues/51)
+  pending changes. Choose **Back to options** from the shade picker when you
+  finish editing shades.
 - **Assisted calibration** lets you choose a visual group and accept the suggested
   midpoint of the largest remaining gap or enter your own target. Stage a move
   or use the shades' current positions. After aligning the shades, select
@@ -83,10 +82,10 @@ shade's calibration to both reported positions and position commands.
   anchor. **Undo last** on the group selection screen reverses the last recorded
   changes in the current flow.
 
-To apply assisted calibration, return to group selection, choose **Back**, and
-select **Save changes** on the top-level Options menu. Staging can move shades
-before any calibration is saved. The [Options flow diagram](docs/OPTIONS_FLOW.md)
-shows the workflow branches.
+For assisted calibration, return to group selection and choose **Back**. Select
+**Save changes** on the top-level Options menu to apply either type of
+calibration. Staging can move shades before any calibration is saved.
+The [Options flow diagram](docs/OPTIONS_FLOW.md) shows the workflow branches.
 
 ## Troubleshooting
 

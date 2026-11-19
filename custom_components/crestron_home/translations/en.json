@@ -72,7 +72,11 @@
         "title": "Select a shade",
         "description": "Choose the shade whose calibration curve you want to edit.",
         "data": {
-          "shade": "Shade"
+          "shade": "Shade",
+          "action": "Action"
+        },
+        "data_description": {
+          "action": "Open the selected shade or return to Options to save pending changes."
         },
         "submit": "Continue"
       },

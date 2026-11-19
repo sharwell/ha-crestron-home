@@ -9,7 +9,7 @@ from types import MappingProxyType
 import pytest
 import pytest_asyncio
 from homeassistant import loader
-from homeassistant.config_entries import ConfigEntries, ConfigEntry
+from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigFlowResult
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import frame
@@ -222,3 +222,73 @@ async def test_assisted_undo_keeps_earlier_recording_after_finish(hass, calibrat
         {"pc": 40, "raw": 28000},
         {"pc": 100, "raw": 65535},
     ]
+
+
+async def _open_manual_editor(hass: HomeAssistant, entry: ConfigEntry) -> ConfigFlowResult:
+    options = hass.config_entries.options
+    menu = await options.async_init(entry.entry_id)
+    flow_id = menu["flow_id"]
+    picker = await options.async_configure(flow_id, {"next_step_id": "select_shade"})
+    assert picker["step_id"] == "select_shade"
+    editor = await options.async_configure(flow_id, {"shade": SHADE_ID})
+    assert editor["step_id"] == "edit_shade"
+    return editor
+
+
+async def _submit_manual_anchor(hass: HomeAssistant, flow_id: str, *, action: str) -> None:
+    options = hass.config_entries.options
+    editor = await options.async_configure(flow_id, {"action": "add"})
+    assert editor["step_id"] == "edit_shade"
+    result = await options.async_configure(flow_id, {"raw_1": 36000, "action": action})
+    assert result["step_id"] == "select_shade"
+
+
+async def _finish_manual(hass: HomeAssistant, flow_id: str) -> None:
+    options = hass.config_entries.options
+    menu = await options.async_configure(flow_id, {"action": "back"})
+    assert menu["type"] is FlowResultType.MENU
+    result = await options.async_configure(flow_id, {"next_step_id": "finish"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+@pytest.mark.asyncio
+async def test_manual_calibration_saves_at_finish_and_reopens_with_saved_curve(hass, calibration):
+    entry, _, _ = calibration
+    editor = await _open_manual_editor(hass, entry)
+    flow_id = editor["flow_id"]
+    await _submit_manual_anchor(hass, flow_id, action="save")
+    assert OPT_CALIBRATION not in entry.options
+
+    await _finish_manual(hass, flow_id)
+    assert entry.options[OPT_CALIBRATION][SHADE_ID]["anchors"] == [
+        {"pc": 0, "raw": 0},
+        {"pc": 50, "raw": 36000},
+        {"pc": 100, "raw": 65535},
+    ]
+
+    reopened = await _open_manual_editor(hass, entry)
+    assert reopened["data_schema"]({})["raw_1"] == 36000
+    hass.config_entries.options.async_abort(reopened["flow_id"])
+
+
+@pytest.mark.asyncio
+async def test_closing_manual_calibration_discards_pending_curve(hass, calibration):
+    entry, _, _ = calibration
+    original_options = dict(entry.options)
+    editor = await _open_manual_editor(hass, entry)
+    flow_id = editor["flow_id"]
+    await _submit_manual_anchor(hass, flow_id, action="save")
+
+    hass.config_entries.options.async_abort(flow_id)
+    assert entry.options == original_options
+
+
+@pytest.mark.asyncio
+async def test_manual_editor_back_discards_current_edit_before_finish(hass, calibration):
+    entry, _, _ = calibration
+    editor = await _open_manual_editor(hass, entry)
+    flow_id = editor["flow_id"]
+    await _submit_manual_anchor(hass, flow_id, action="cancel")
+    await _finish_manual(hass, flow_id)
+
+    assert OPT_CALIBRATION not in entry.options

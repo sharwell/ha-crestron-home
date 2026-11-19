@@ -1003,6 +1003,9 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         if user_input is not None:
             try:
+                if self._selector_value(user_input.get("action")) == "back":
+                    return await self.async_step_init()
+
                 shade_raw = user_input.get("shade")
                 shade_id = self._normalize_shade_id(shade_raw)
                 if not shade_id:
@@ -1032,9 +1035,25 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                     }
                 }
             )
-            data_schema = vol.Schema({vol.Required("shade"): shade_selector})
         else:
-            data_schema = vol.Schema({vol.Required("shade"): str})
+            shade_selector = str
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional("shade"): shade_selector,
+                vol.Required("action", default="continue"): selector.selector(
+                    {
+                        "select": {
+                            "options": [
+                                {"value": "continue", "label": "Continue"},
+                                {"value": "back", "label": "Back to options"},
+                            ],
+                            "mode": "dropdown",
+                        }
+                    }
+                ),
+            }
+        )
 
         return self.async_show_form(
             step_id="select_shade",
