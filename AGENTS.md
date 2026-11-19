@@ -187,7 +187,7 @@
   Respect generated output, unsupported formats, private data, caches, and
   deliberate exclusions. Check generator destinations first and preserve
   unrelated outputs, saved configurations, and release evidence.
-- From the repository root, install the test dependencies in a Python 3.12
+- From the repository root, install the test dependencies in a Python 3.14.2
   environment with `python -m pip install -r requirements-test.txt`. Run
   `python -m pytest` for Python behavior changes or
   `python -m pytest tests/test_docs_options_flow.py` for the README/Options
