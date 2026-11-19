@@ -122,14 +122,15 @@ Assistant cover entities.
 
 ## Development setup
 
-1. Clone [home-assistant/core](https://github.com/home-assistant/core) next to this repository:
-   ```bash
-   git clone --depth=1 https://github.com/home-assistant/core hass-core
-   ```
-2. Run hassfest validation against the integration scaffold:
-   ```bash
-   (cd hass-core && python3 -m script.hassfest --action validate --integration-path ../custom_components/crestron_home)
-   ```
+CI validates the integration with [hassfest](.github/workflows/hassfest.yml).
+To run it locally, prepare a [Home Assistant Core checkout](https://github.com/home-assistant/core)
+with its Python environment and hassfest dependencies in a sibling directory named `hass-core`.
+From this repository's root, using Bash and the Core Python environment, run:
+
+```bash
+integration_path="$PWD/custom_components/crestron_home"
+(cd ../hass-core && python3 -m script.hassfest --action validate --integration-path "$integration_path")
+```
 
 ## Roadmap
 
