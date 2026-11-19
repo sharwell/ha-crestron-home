@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 import types
 from typing import Any, Coroutine
 
@@ -7,7 +8,12 @@ from home_assistant_stubs import home_assistant_stubs
 with home_assistant_stubs():
     from homeassistant.exceptions import HomeAssistantError
 
-    from custom_components.crestron_home.api import ShadeCommandResponse, ShadeCommandResult
+    from custom_components.crestron_home.api import (
+        ShadeCommandFailedError,
+        ShadeCommandResponse,
+        ShadeCommandResult,
+    )
+    from custom_components.crestron_home.const import BATCH_MAX_ITEMS
     from custom_components.crestron_home.write import ShadeWriteBatcher
 
 
@@ -129,11 +135,15 @@ def test_batcher_coalesces_group_stage() -> None:
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
 
-        await asyncio.gather(
-            *(batcher.enqueue(f"shade-{index}", index * 1000) for index in range(6))
-        )
-
-        await asyncio.sleep(0.2)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(batcher.enqueue(f"shade-{index}", index * 1000) for index in range(6))
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
 
         assert len(calls) == 1
         payload = calls[0]
@@ -159,15 +169,55 @@ def test_batcher_splits_large_payload() -> None:
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=80)
 
-        for index in range(20):
-            await batcher.enqueue(f"shade-{index}", index)
-        await asyncio.sleep(0.2)
-        await batcher.async_flush()
+        shade_ids = [f"shade-{index}" for index in range(BATCH_MAX_ITEMS + 4)]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(
+                        batcher.enqueue(shade_id, index)
+                        for index, shade_id in enumerate(shade_ids)
+                    )
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
 
         assert len(calls) >= 2
-        assert all(len(call) <= 16 for call in calls)
-        all_ids = [item["id"] for call in calls for item in call]
-        assert all_ids.count("shade-0") == 1
-        assert all_ids.count("shade-19") == 1
+        assert max(map(len, calls)) == BATCH_MAX_ITEMS
+        assert Counter(item["id"] for call in calls for item in call) == Counter(shade_ids)
+
+    asyncio.run(_async_test())
+
+
+def test_batcher_sends_remaining_writes_after_a_split_request_fails() -> None:
+    """Only callers in the rejected request should receive its error."""
+
+    async def _async_test() -> None:
+        hass = FakeHass(asyncio.get_running_loop())
+        calls: list[list[str]] = []
+
+        class _Client:
+            async def async_set_shade_positions(self, items, *, retry: bool = True):
+                calls.append([item["id"] for item in items])
+                if len(calls) == 1:
+                    raise ShadeCommandFailedError("rejected")
+                return ShadeCommandResponse(status="success", results={})
+
+        batcher = ShadeWriteBatcher(hass, _Client(), max_items=2)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    *(batcher.enqueue(f"shade-{index}", index) for index in range(3)),
+                    return_exceptions=True,
+                ),
+                timeout=5,
+            )
+        finally:
+            await batcher.async_shutdown()
+
+        assert calls == [["shade-0", "shade-1"], ["shade-2"]]
+        assert all(isinstance(result, HomeAssistantError) for result in results[:2])
+        assert results[2] is None
 
     asyncio.run(_async_test())

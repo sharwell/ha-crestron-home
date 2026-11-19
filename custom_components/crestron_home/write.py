@@ -7,6 +7,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import batched
 from typing import Any, Sequence
 
 from homeassistant.core import HomeAssistant
@@ -52,7 +53,6 @@ class ShadeWriteBatcher:
         self._queue: dict[str, _QueuedItem] = {}
         self._waiters: dict[str, list[asyncio.Future[None]]] = defaultdict(list)
         self._timer: asyncio.TimerHandle | None = None
-        self._flush_task: asyncio.Task[None] | None = None
         self._closed = False
         self._on_success = on_success
         self._on_flush = on_flush
@@ -67,64 +67,76 @@ class ShadeWriteBatcher:
         self._queue[shade_id] = _QueuedItem(shade_id=shade_id, position=position)
         self._waiters[shade_id].append(future)
 
-        if len(self._queue) >= self._max_items:
-            self._cancel_timer()
-            await self._flush_now()
-        else:
-            self._schedule_timer()
-
+        self._schedule_timer(immediate=len(self._queue) >= self._max_items)
         await future
 
     async def async_flush(self) -> None:
         """Flush the current queue immediately."""
 
-        await self._flush_now()
+        self._cancel_timer()
+        await self._flush()
 
-    def _schedule_timer(self) -> None:
-        if self._debounce_seconds <= 0:
-            self._hass.async_create_task(self._flush_now())
-            return
+    def _schedule_timer(self, *, immediate: bool = False) -> None:
+        if immediate:
+            self._cancel_timer()
         if self._timer is not None:
             return
 
         def _on_timer() -> None:
             self._timer = None
-            self._hass.async_create_task(self._flush_now())
+            self._hass.async_create_task(self._flush_scheduled())
 
-        self._timer = self._hass.loop.call_later(self._debounce_seconds, _on_timer)
+        delay = 0 if immediate else self._debounce_seconds
+        self._timer = self._hass.loop.call_later(delay, _on_timer)
 
     def _cancel_timer(self) -> None:
         if self._timer is not None:
             self._timer.cancel()
             self._timer = None
 
-    async def _flush_now(self) -> None:
-        if self._flush_task and not self._flush_task.done():
-            await self._flush_task
-            return
-
-        self._flush_task = self._hass.async_create_task(self._flush())
+    async def _flush_scheduled(self) -> None:
         try:
-            await self._flush_task
-        finally:
-            self._flush_task = None
+            await self._flush()
+        except HomeAssistantError as err:
+            # Affected enqueue callers receive the error via their own futures.
+            _LOGGER.warning("Shade write batch failed: %s", err)
 
     async def _flush(self) -> None:
         async with self._lock:
-            if not self._queue:
-                return
-
             queued_items = self._queue
             waiters = self._waiters
             self._queue = {}
             self._waiters = defaultdict(list)
 
+            first_error: HomeAssistantError | None = None
+            try:
+                for ids in batched(queued_items, self._max_items):
+                    items = [queued_items[shade_id] for shade_id in ids]
+                    batch_waiters = {shade_id: waiters[shade_id] for shade_id in ids}
+                    try:
+                        await self._send_batch(items, batch_waiters)
+                    except HomeAssistantError as err:
+                        if first_error is None:
+                            first_error = err
+            except asyncio.CancelledError:
+                for futures in waiters.values():
+                    for future in futures:
+                        future.cancel()
+                raise
+
+            if first_error is not None:
+                raise first_error
+
+    async def _send_batch(
+        self,
+        items: list[_QueuedItem],
+        waiters: dict[str, list[asyncio.Future[None]]],
+    ) -> None:
         payload_items = [
             {"id": item.shade_id, "position": item.position}
-            for item in queued_items.values()
+            for item in items
         ]
-
-        ids = [item.shade_id for item in queued_items.values()]
+        ids = [item.shade_id for item in items]
 
         status: str | None = None
         try:
@@ -169,12 +181,15 @@ class ShadeWriteBatcher:
         )
 
         if self._on_success is not None:
-            self._on_success()
+            try:
+                self._on_success()
+            except Exception:  # pragma: no cover - defensive safeguard
+                _LOGGER.exception("Unhandled exception from success callback")
 
         default_status = "success" if status in {"success", "partial"} else status
 
         failed: dict[str, ShadeCommandResult] = {}
-        for shade_id, item in queued_items.items():
+        for shade_id in ids:
             result = response.results.get(shade_id)
             if result is None:
                 result = ShadeCommandResult(status=default_status)
@@ -231,14 +246,10 @@ class ShadeWriteBatcher:
         """Cancel scheduled flushes and process remaining items."""
 
         self._closed = True
-        self._cancel_timer()
-        if self._queue:
-            try:
-                await self._flush_now()
-            except HomeAssistantError:
-                pass
-        if self._flush_task and not self._flush_task.done():
-            await self._flush_task
+        try:
+            await self.async_flush()
+        except HomeAssistantError:
+            pass
 
     def _translate(self, key: str, **kwargs: Any) -> str:
         language = self._hass.config.language
