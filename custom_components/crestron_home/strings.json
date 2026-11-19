@@ -211,12 +211,19 @@
       "anchors_pc_range": "Percent values must stay between 0 and 100 and increase for each anchor.",
       "anchors_raw_range": "Raw position values must stay between 0 and 65535.",
       "anchors_pc_order": "Anchor percentages must increase for each entry.",
-      "anchors_raw_monotonic": "Raw values must never decrease between anchors."
+      "anchors_raw_monotonic": "Raw values must never decrease between anchors.",
+      "minimum_position_unreachable": "The calibration cannot reach the minimum position. Adjust the anchors or lower the minimum."
     }
   },
   "exceptions": {
     "error_write_failed": {
       "message": "Failed to send commands to the controller."
+    },
+    "error_minimum_position_changed": {
+      "message": "The shade minimum position changed. Retry the command."
+    },
+    "error_minimum_position_unreachable": {
+      "message": "The shade calibration cannot reach the minimum position."
     },
     "error_partial_write": {
       "message": "Shade command failed for {shade_id}: {reason}"

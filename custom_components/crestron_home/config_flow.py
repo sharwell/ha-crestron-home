@@ -251,7 +251,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings: list[str] = []
-        self._assisted_minimum_skips: set[str] = set()
+        self._assisted_stage_skips: set[str] = set()
         self._assisted_feedback: dict[str, object] | None = None
         self._assisted_snapshot: dict[str, tuple[ShadeCalibration, bool]] | None = None
         self._assisted_last_run: AssistedCalibrationRun | None = None
@@ -481,10 +481,20 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_global_defaults(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._options[CONF_INVERT] = bool(user_input[CONF_INVERT])
-            self._calibration_collection = parse_calibration_options(self._options)
-            return await self.async_step_init()
+            invert = bool(user_input[CONF_INVERT])
+            try:
+                for shade_id, minimum in self._calibration_collection.minimum_positions.items():
+                    calibration = self._calibration_collection.for_shade(shade_id)
+                    if calibration.invert_override is None:
+                        calibration.minimum_raw_target(minimum, invert)
+            except InvalidCalibrationError as err:
+                errors[CONF_INVERT] = err.code
+            else:
+                self._options[CONF_INVERT] = invert
+                self._calibration_collection = parse_calibration_options(self._options)
+                return await self.async_step_init()
 
         data_schema = vol.Schema(
             {
@@ -497,6 +507,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="global_defaults",
             data_schema=data_schema,
+            errors=errors,
         )
 
     async def async_step_visual_groups(
@@ -1106,7 +1117,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_minimum_skips.clear()
+        self._assisted_stage_skips.clear()
 
     def _assisted_group_members(self, group_id: str) -> list[str]:
         members = [
@@ -1131,7 +1142,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_minimum_skips.clear()
+        self._assisted_stage_skips.clear()
         return True
 
     def _assisted_member_labels(self, members: Sequence[str]) -> list[str]:
@@ -1166,7 +1177,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def _assisted_perform_stage(self) -> None:
         coordinator = self._coordinator
         self._assisted_stage_warnings = []
-        self._assisted_minimum_skips.clear()
+        self._assisted_stage_skips.clear()
         if coordinator is None:
             self._assisted_stage_warnings.append("Controller unavailable")
             self._assisted_stage_sent = True
@@ -1200,26 +1211,40 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         # Pending edits can change the raw mapping, but the writer still applies
         # the saved limit. Do not stage a target it would have to replace.
         active_calibrations = parse_calibration_options(self._config_entry.options)
-        tasks = []
+        targets = {}
         for shade_id in available:
             calibration = self._calibration_collection.for_shade(shade_id)
             invert = calibration.resolved_invert(self._calibration_collection.global_invert)
             raw = pct_to_raw(target, calibration.anchors, invert)
-            raw = self._calibration_collection.limit_raw_target(shade_id, raw)
-            if (
-                target < self._calibration_collection.minimum_position(shade_id)
-                or active_calibrations.limit_raw_target(shade_id, raw) != raw
-            ):
-                self._assisted_minimum_skips.add(shade_id)
-                label = self._assisted_member_labels([shade_id])[0]
-                self._assisted_stage_warnings.append(
-                    f"{label}: move would go below its minimum position"
+            try:
+                raw = self._calibration_collection.limit_raw_target(shade_id, raw)
+                below_minimum = (
+                    target < self._calibration_collection.minimum_position(shade_id)
+                    or active_calibrations.limit_raw_target(shade_id, raw) != raw
                 )
-                continue
-            tasks.append(batcher.enqueue(shade_id, raw))
+            except InvalidCalibrationError as err:
+                warning = str(err)
+            else:
+                if not below_minimum:
+                    targets[shade_id] = raw
+                    continue
+                warning = "move would go below its minimum position"
+            self._assisted_stage_skips.add(shade_id)
+            label = self._assisted_member_labels([shade_id])[0]
+            self._assisted_stage_warnings.append(f"{label}: {warning}")
 
-        if tasks:
-            await asyncio.gather(*tasks)
+        if targets:
+            results = await asyncio.gather(
+                *(batcher.enqueue(shade_id, raw) for shade_id, raw in targets.items()),
+                return_exceptions=True,
+            )
+            failures = {
+                shade_id: result for shade_id, result in zip(targets, results, strict=True)
+                if isinstance(result, BaseException)
+            }
+            self._assisted_stage_skips.update(failures)
+            if failures:
+                raise next(iter(failures.values()))
             coordinator.burst()
 
     def _assisted_stage_positions(self) -> list[str]:
@@ -1257,7 +1282,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         for shade_id in self._assisted_members:
             shade = coordinator.data.get(shade_id)
             if (
-                shade_id in self._assisted_minimum_skips
+                shade_id in self._assisted_stage_skips
                 or not isinstance(shade, Shade)
                 or shade.position is None
             ):
@@ -1276,10 +1301,15 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 calibration,
                 shade_id in self._calibration_collection.per_shade,
             )
-            new_values[shade_id] = ShadeCalibration(
+            updated_calibration = ShadeCalibration(
                 anchors=anchors,
                 invert_override=calibration.invert_override,
             )
+            if minimum := self._calibration_collection.minimum_position(shade_id):
+                updated_calibration.minimum_raw_target(
+                    minimum, self._calibration_collection.global_invert,
+                )
+            new_values[shade_id] = updated_calibration
             saved.append(shade_id)
 
         for shade_id in saved:
@@ -1401,14 +1431,18 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
                 if action == "save":
                     try:
-                        anchors_tuple = validate_anchors(self._working_anchors)
+                        calibration = ShadeCalibration(
+                            anchors=validate_anchors(self._working_anchors),
+                            invert_override=self._working_invert_override,
+                        )
+                        if self._working_minimum_position:
+                            calibration.minimum_raw_target(
+                                self._working_minimum_position,
+                                self._calibration_collection.global_invert,
+                            )
                     except InvalidCalibrationError as err:
                         errors["base"] = err.code
                     else:
-                        calibration = ShadeCalibration(
-                            anchors=anchors_tuple,
-                            invert_override=self._working_invert_override,
-                        )
                         if (
                             calibration.anchors == DEFAULT_ANCHORS
                             and calibration.invert_override is None

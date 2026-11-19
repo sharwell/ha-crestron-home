@@ -67,8 +67,10 @@ class FakeCrestronController:
         ]
 
     async def async_set_shade_positions(
-        self, items: list[dict[str, str | int]],
+        self, items: list[dict[str, str | int]], *, validate_before_send=None,
     ) -> ShadeCommandResponse:
+        if validate_before_send is not None:
+            validate_before_send()
         self.writes.append([dict(item) for item in items])
         return ShadeCommandResponse(status="success", results={})
 
@@ -358,6 +360,80 @@ async def _save_shade_minimum(hass: HomeAssistant, entry: ConfigEntry, minimum: 
     )
     assert picker["step_id"] == "select_shade"
     await _finish_manual(hass, flow_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        CONF_INVERT: False,
+        OPT_CALIBRATION: {SHADE_ID: {
+            "anchors": [[0, 0], [20, 10000], [60, 10000], [100, 65535]],
+        }},
+    }],
+    indirect=True,
+)
+async def test_close_target_reports_above_minimum_inside_flat_span(hass, calibration):
+    entry, controller, coordinator = calibration
+    await _save_shade_minimum(hass, entry, 40)
+    shade = CrestronHomeShade(coordinator, entry, SHADE_ID)
+
+    await asyncio.wait_for(shade.async_close_cover(), timeout=5)
+    assert controller.writes == [[{"id": SHADE_ID, "position": 10001}]]
+    controller.position = 10001
+    await coordinator.async_refresh()
+    assert shade.current_cover_position == 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        CONF_INVERT: False,
+        OPT_CALIBRATION: {SHADE_ID: {
+            "anchors": [[0, 0], [20, 10000], [100, 10000]],
+        }},
+    }],
+    indirect=True,
+)
+async def test_editor_rejects_minimum_above_calibrated_travel(hass, calibration):
+    entry, controller, _ = calibration
+    editor = await _open_manual_editor(hass, entry)
+    options = hass.config_entries.options
+    flow_id = editor["flow_id"]
+    result = await options.async_configure(
+        flow_id, {"minimum_position": 40, "action": "save"},
+    )
+    assert result["step_id"] == "edit_shade"
+    assert result["errors"] == {"base": "minimum_position_unreachable"}
+    assert OPT_MINIMUM_POSITIONS not in entry.options
+    assert not controller.writes
+    options.async_abort(flow_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration",
+    [{
+        CONF_INVERT: False,
+        OPT_CALIBRATION: {SHADE_ID: {
+            "anchors": [[0, 10000], [40, 10000], [100, 65535]],
+        }},
+        OPT_MINIMUM_POSITIONS: {SHADE_ID: 90},
+    }],
+    indirect=True,
+)
+async def test_global_invert_rejects_unreachable_minimum(hass, calibration):
+    entry, _, _ = calibration
+    options = hass.config_entries.options
+    menu = await options.async_init(entry.entry_id)
+    flow_id = menu["flow_id"]
+    await options.async_configure(flow_id, {"next_step_id": "global_defaults"})
+    result = await options.async_configure(flow_id, {CONF_INVERT: True})
+    assert result["step_id"] == "global_defaults"
+    assert result["errors"] == {CONF_INVERT: "minimum_position_unreachable"}
+    assert entry.options[CONF_INVERT] is False
+    options.async_abort(flow_id)
 
 
 @pytest.mark.asyncio

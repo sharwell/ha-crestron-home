@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -242,7 +243,8 @@ class ApiClient:
         raise CrestronHomeApiError("Shade response was not an object")
 
     async def async_set_shade_positions(
-        self, items: list[dict[str, int]], *, retry: bool = True
+        self, items: list[dict[str, int]], *, retry: bool = True,
+        validate_before_send: Callable[[], None] | None = None,
     ) -> ShadeCommandResponse:
         """Submit raw shade targets and return the controller's acknowledgement.
 
@@ -253,6 +255,9 @@ class ApiClient:
 
         With `retry=True`, an authentication rejection of the write triggers a
         forced login. If that succeeds, the client resubmits the write once.
+        Run `validate_before_send`, when supplied, after authentication and
+        immediately before each submission. If it raises, skip that submission
+        and propagate the error.
         Authentication failures raise InvalidAuthError. Connection errors and
         timeouts raise CannotConnectError. An aggregate "failure" raises
         ShadeCommandFailedError. An unexpected HTTP status, non-JSON content
@@ -278,6 +283,8 @@ class ApiClient:
 
         payload = {"shades": items}
 
+        if validate_before_send is not None:
+            validate_before_send()
         _LOGGER.debug("POST %s payload=%s", PATH_SHADES_SET_STATE, payload)
 
         try:
@@ -293,7 +300,9 @@ class ApiClient:
                             "Auth key expired during SetState, retrying after reauthentication"
                         )
                         await self.async_login(force=True)
-                        return await self.async_set_shade_positions(items, retry=False)
+                        return await self.async_set_shade_positions(
+                            items, retry=False, validate_before_send=validate_before_send,
+                        )
                     raise InvalidAuthError("Authentication failed after retry")
 
                 response.raise_for_status()

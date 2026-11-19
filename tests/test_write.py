@@ -3,17 +3,21 @@ from collections import Counter
 import types
 from typing import Any, Coroutine
 
+import pytest
+
 from home_assistant_stubs import home_assistant_stubs
 
 with home_assistant_stubs():
     from homeassistant.exceptions import HomeAssistantError
 
+    from custom_components.crestron_home import api
     from custom_components.crestron_home.api import (
         ShadeCommandFailedError,
         ShadeCommandResponse,
         ShadeCommandResult,
     )
-    from custom_components.crestron_home.const import BATCH_MAX_ITEMS
+    from custom_components.crestron_home.calibration import parse_calibration_options
+    from custom_components.crestron_home.const import BATCH_MAX_ITEMS, OPT_MINIMUM_POSITIONS
     from custom_components.crestron_home.write import ShadeWriteBatcher
 
 
@@ -24,6 +28,90 @@ class FakeHass:
 
     def async_create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
         return self.loop.create_task(coro)
+
+
+class _HttpReply:
+    def __init__(self, status, data=None, *, on_enter=None):
+        self.status = status
+        self._data = data
+        self._on_enter = on_enter
+
+    async def __aenter__(self):
+        if self._on_enter is not None:
+            await self._on_enter()
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def raise_for_status(self):
+        assert self.status == 200
+
+    async def json(self):
+        return self._data
+
+
+class _ReauthController:
+    def __init__(self):
+        self.reauth_started = asyncio.Event()
+        self.reauth_complete = asyncio.Event()
+        self.logins = 0
+        self.writes = []
+
+    async def _pause_reauthentication(self):
+        self.reauth_started.set()
+        await self.reauth_complete.wait()
+
+    def get(self, _url, **_kwargs):
+        self.logins += 1
+        return _HttpReply(
+            200,
+            {"authkey": f"fictional-key-{self.logins}"},
+            on_enter=self._pause_reauthentication if self.logins == 2 else None,
+        )
+
+    def post(self, _url, *, json, headers, **_kwargs):
+        self.writes.append((json["shades"], headers["Crestron-RestAPI-AuthKey"]))
+        if len(self.writes) == 1:
+            return _HttpReply(401)
+        return _HttpReply(200, {"status": "success"})
+
+
+@pytest.mark.parametrize("raise_minimum", [False, True], ids=["unchanged", "raised"])
+def test_write_retry_rechecks_current_minimum(monkeypatch, raise_minimum):
+    async def _async_test():
+        hass = FakeHass(asyncio.get_running_loop())
+        controller = _ReauthController()
+        monkeypatch.setattr(api, "async_get_clientsession", lambda _hass: controller)
+        options = {"invert": False}
+        batcher = ShadeWriteBatcher(
+            hass, api.ApiClient(hass, "controller.invalid", "fictional-token"),
+            debounce_ms=0, get_calibrations=lambda: parse_calibration_options(options),
+        )
+        queued = asyncio.create_task(batcher.enqueue("shade-1", 0))
+        requested = [{"id": "shade-1", "position": 0}]
+        try:
+            await asyncio.wait_for(controller.reauth_started.wait(), timeout=5)
+            if raise_minimum:
+                options[OPT_MINIMUM_POSITIONS] = {"shade-1": 10}
+                controller.reauth_complete.set()
+                with pytest.raises(HomeAssistantError, match="minimum position changed"):
+                    await asyncio.wait_for(queued, timeout=5)
+                assert controller.writes == [(requested, "fictional-key-1")]
+                await asyncio.wait_for(batcher.enqueue("shade-1", 0), timeout=5)
+                expected = [{"id": "shade-1", "position": 6554}]
+            else:
+                controller.reauth_complete.set()
+                await asyncio.wait_for(queued, timeout=5)
+                expected = requested
+            assert controller.writes == [
+                (requested, "fictional-key-1"), (expected, "fictional-key-2"),
+            ]
+        finally:
+            controller.reauth_complete.set()
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
+
+    asyncio.run(_async_test())
 
 
 def test_batcher_deduplicates_latest_position() -> None:

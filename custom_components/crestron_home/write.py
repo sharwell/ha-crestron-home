@@ -14,8 +14,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.translation import async_get_cached_translations
 
-from .api import ApiClient, CrestronHomeApiError, ShadeCommandFailedError, ShadeCommandResult
-from .calibration import CalibrationCollection
+from .api import ApiClient, CrestronHomeApiError, ShadeCommandResult
+from .calibration import CalibrationCollection, InvalidCalibrationError
 from .const import (
     BATCH_DEBOUNCE_MS,
     BATCH_MAX_ITEMS,
@@ -37,7 +37,8 @@ class ShadeWriteBatcher:
     """Batch writes to the Crestron Home shade API.
 
     When supplied, get_calibrations provides the current per-shade limits at
-    dispatch time. Flush callbacks receive the limited payload actually sent.
+    dispatch time. Cancel an unsent submission if its targets became invalid
+    during authentication. Flush callbacks receive the prepared payload.
     """
 
     def __init__(
@@ -139,26 +140,44 @@ class ShadeWriteBatcher:
         items: list[_QueuedItem],
         waiters: dict[str, list[asyncio.Future[None]]],
     ) -> None:
-        calibrations = self._get_calibrations() if self._get_calibrations else None
-        payload_items = [
-            {
-                "id": item.shade_id,
-                "position": (
-                    calibrations.limit_raw_target(item.shade_id, item.position)
-                    if calibrations else item.position
-                ),
-            }
-            for item in items
-        ]
+        get_calibrations = self._get_calibrations
+        payload_items = []
         ids = [item.shade_id for item in items]
 
         status: str | None = None
         try:
-            response = await self._client.async_set_shade_positions(payload_items)
+            calibrations = get_calibrations() if get_calibrations else None
+            positions = [
+                calibrations.limit_raw_target(item.shade_id, item.position)
+                if calibrations else item.position
+                for item in items
+            ]
+            payload_items = [
+                {"id": shade_id, "position": position}
+                for shade_id, position in zip(ids, positions, strict=True)
+            ]
+            if get_calibrations is None:
+                response = await self._client.async_set_shade_positions(payload_items)
+            else:
+                def validate_before_send() -> None:
+                    current = get_calibrations()
+                    if any(
+                        current.limit_raw_target(shade_id, position) != position
+                        for shade_id, position in zip(ids, positions, strict=True)
+                    ):
+                        raise HomeAssistantError(self._translate("error_minimum_position_changed"))
+
+                response = await self._client.async_set_shade_positions(
+                    payload_items, validate_before_send=validate_before_send,
+                )
             status = response.status
-        except ShadeCommandFailedError as err:
+        except HomeAssistantError as err:
             status = "error"
-            error = HomeAssistantError(self._translate("error_write_failed"))
+            self._reject_all(waiters, err)
+            raise
+        except InvalidCalibrationError as err:
+            status = "error"
+            error = HomeAssistantError(self._translate("error_minimum_position_unreachable"))
             self._reject_all(waiters, error)
             raise error from err
         except CrestronHomeApiError as err:
@@ -172,7 +191,7 @@ class ShadeWriteBatcher:
             self._reject_all(waiters, error)
             raise error from err
         finally:
-            if self._on_flush is not None:
+            if self._on_flush is not None and payload_items:
                 try:
                     self._on_flush(payload_items, status)
                 except Exception:  # pragma: no cover - defensive safeguard
@@ -277,6 +296,8 @@ class ShadeWriteBatcher:
                 "error_write_disabled": "Shade control is shutting down",
                 "error_write_failed": "Failed to send shade command",
                 "error_partial_write": "Shade command failed for {shade_id}: {reason}",
+                "error_minimum_position_changed": "The shade minimum position changed. Retry the command.",
+                "error_minimum_position_unreachable": "The shade calibration cannot reach the minimum position.",
             }
             template = fallback.get(key, key)
         try:

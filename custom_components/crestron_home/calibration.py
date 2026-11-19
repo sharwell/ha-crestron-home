@@ -38,6 +38,7 @@ from .const import (
     ERR_ANCHORS_RAW_MONOTONIC,
     ERR_ANCHORS_RAW_RANGE,
     ERR_ANCHORS_TOO_FEW,
+    ERR_MINIMUM_POSITION_UNREACHABLE,
     OPT_CALIBRATION,
     OPT_MINIMUM_POSITIONS,
 )
@@ -73,6 +74,33 @@ class ShadeCalibration:
             return global_invert
         return self.invert_override
 
+    def minimum_raw_target(self, minimum: int, global_invert: bool) -> int:
+        """Return an allowed raw bound for a positive Home Assistant minimum.
+
+        Round toward open and skip a flat span's raw value when it reports a
+        position below the minimum. Raise InvalidCalibrationError if reaching
+        the minimum would require moving beyond the calibrated open endpoint.
+        """
+        invert = self.resolved_invert(global_invert)
+        threshold = _interpolate_raw(minimum, self.anchors, invert)
+        raw = math.floor(threshold) if invert else math.ceil(threshold)
+        reported = raw_to_pct(raw, self.anchors, invert)
+        assert reported is not None
+        if reported >= minimum:
+            return raw
+
+        # The first matching segment can report the closed side of a plateau.
+        open_endpoint = self.anchors[0 if invert else -1][1]
+        if raw != open_endpoint:
+            raw += -1 if invert else 1
+            reported = raw_to_pct(raw, self.anchors, invert)
+            if reported is not None and reported >= minimum:
+                return raw
+        raise InvalidCalibrationError(
+            ERR_MINIMUM_POSITION_UNREACHABLE,
+            "The shade's calibration cannot reach its minimum position.",
+        )
+
 
 @dataclass(frozen=True)
 class CalibrationCollection:
@@ -97,17 +125,17 @@ class CalibrationCollection:
         """Keep a controller target at or above the shade's configured minimum.
 
         Preserve the supplied raw position when there is no minimum or it is
-        already allowed. Round the calibrated limit toward open on either axis.
+        already allowed. Raise InvalidCalibrationError when the calibration
+        cannot represent the minimum within its travel range.
         """
         minimum = self.minimum_position(shade_id)
         if minimum == CAL_ANCHOR_PC_MIN:
             return raw
         calibration = self.for_shade(shade_id)
-        invert = calibration.resolved_invert(self.global_invert)
-        threshold = _interpolate_raw(minimum, calibration.anchors, invert)
-        if invert:
-            return min(raw, math.floor(threshold))
-        return max(raw, math.ceil(threshold))
+        limit = calibration.minimum_raw_target(minimum, self.global_invert)
+        if calibration.resolved_invert(self.global_invert):
+            return min(raw, limit)
+        return max(raw, limit)
 
 
 def _coerce_int(value: Any) -> int:
