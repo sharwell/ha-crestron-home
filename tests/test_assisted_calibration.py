@@ -1,5 +1,6 @@
-from collections import deque
 from datetime import datetime, timezone
+
+import pytest
 
 from home_assistant_stubs import home_assistant_stubs
 
@@ -10,7 +11,6 @@ with home_assistant_stubs():
         largest_gap_target,
     )
     from custom_components.crestron_home.calibration import ShadeCalibration
-    from custom_components.crestron_home.coordinator import ShadesCoordinator
 
 
 def test_largest_gap_default_endpoints() -> None:
@@ -71,12 +71,12 @@ def test_assisted_run_diagnostics_payload() -> None:
     }
 
 
-def test_coordinator_records_assisted_runs() -> None:
+@pytest.mark.asyncio
+async def test_coordinator_records_assisted_runs(make_coordinator) -> None:
     """Coordinator history should expose assisted calibration runs."""
+    from custom_components.crestron_home.assisted_calibration import AssistedCalibrationRun
 
-    coordinator = object.__new__(ShadesCoordinator)
-    coordinator._assisted_history = deque(maxlen=10)  # type: ignore[attr-defined]
-
+    coordinator = make_coordinator()
     timestamp = datetime(2024, 2, 2, tzinfo=timezone.utc)
     run = AssistedCalibrationRun(
         group_id="group-2",
@@ -86,6 +86,6 @@ def test_coordinator_records_assisted_runs() -> None:
         timestamp=timestamp,
     )
 
-    ShadesCoordinator.record_assisted_calibration(coordinator, run)
+    coordinator.record_assisted_calibration(run)
 
     assert coordinator.assisted_history == [run.as_diagnostics()]
