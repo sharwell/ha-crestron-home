@@ -44,11 +44,16 @@ def test_batcher_deduplicates_latest_position() -> None:
             callback_calls.append(1)
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=50, on_success=_on_success)
-
-        await asyncio.gather(
-            batcher.enqueue("shade-1", 1000),
-            batcher.enqueue("shade-1", 2000),
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    batcher.enqueue("shade-1", 1000),
+                    batcher.enqueue("shade-1", 2000),
+                ),
+                timeout=5,
+            )
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert calls == [[{"id": "shade-1", "position": 2000}]]
         assert len(callback_calls) == 1
@@ -74,11 +79,17 @@ def test_batcher_partial_failure_propagates() -> None:
                 )
 
         batcher = ShadeWriteBatcher(hass, _Client(), debounce_ms=0)
-
-        first = asyncio.create_task(batcher.enqueue("shade-1", 1000))
-        second = asyncio.create_task(batcher.enqueue("shade-2", 2000))
-
-        results = await asyncio.gather(first, second, return_exceptions=True)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    batcher.enqueue("shade-1", 1000),
+                    batcher.enqueue("shade-2", 2000),
+                    return_exceptions=True,
+                ),
+                timeout=5,
+            )
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert results[0] is None
         assert isinstance(results[1], HomeAssistantError)
@@ -109,8 +120,11 @@ def test_batcher_flush_callback_receives_payload() -> None:
             on_flush=_on_flush,
         )
 
-        await batcher.enqueue("shade-1", 1234)
-        await batcher.async_flush()
+        try:
+            await asyncio.wait_for(batcher.enqueue("shade-1", 1234), timeout=5)
+            await asyncio.wait_for(batcher.async_flush(), timeout=5)
+        finally:
+            await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
         assert flush_calls
         payload, status = flush_calls[0]
