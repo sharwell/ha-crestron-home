@@ -34,7 +34,7 @@ def test_plan_targets_no_backtrack() -> None:
     assert 0.0 <= result.targets[0].position <= 1.0
 
 
-def test_group_planner_consistency() -> None:
+def test_group_planner_returns_consistent_targets_for_both_shades() -> None:
     planner = PredictiveStopPlanner(tau_acc=1.0, tau_dec=1.0)
     inputs = [
         _make_input(shade_id="s1", position=0.6, velocity=0.32, baseline=0.25),
@@ -46,11 +46,11 @@ def test_group_planner_consistency() -> None:
         ),
     ]
     result = planner.plan_targets(inputs)
-    deltas = [
-        target.position - base
-        for target, base in zip(result.targets, [0.25, 0.20])
-    ]
-    assert max(deltas) - min(deltas) < 0.05
+    assert sorted(target.shade_id for target in result.targets) == ["s1", "s2"]
+    positions = {target.shade_id: target.position for target in result.targets}
+    first_offset = positions["s1"] - 0.25
+    second_offset = positions["s2"] - 0.20
+    assert abs(first_offset - second_offset) < 0.05
 
 
 def test_planner_clamps_to_range() -> None:
@@ -79,11 +79,17 @@ def test_runtime_learns_from_motion() -> None:
         history_size=5,
     )
 
+    speed_model = manager.get_state("shade").rls
+    initial_speed = speed_model.predict(0.1)
     runtime.record_poll("shade", timestamp=1.0, position=0.1)
-    runtime.record_poll("shade", timestamp=2.0, position=0.4)
+    runtime.record_poll("shade", timestamp=2.0, position=0.6)
+    observed_speed = 0.5  # Half the travel range in one second.
+    learned_speed = manager.get_state("shade").rls.predict(0.1)
+    assert abs(learned_speed - observed_speed) < abs(initial_speed - observed_speed)
+
     state = runtime.get_state("shade")
     assert state.last_sample is not None
-    assert state.last_direction != 0
+    assert state.last_direction == 1
 
     plan = runtime.plan_stop(["shade"], timestamp=2.1)
     target = next(item for item in plan.targets if item.shade_id == "shade")
