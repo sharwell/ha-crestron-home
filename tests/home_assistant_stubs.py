@@ -102,10 +102,12 @@ def _home_assistant_modules() -> tuple[ModuleType, ...]:
     )
 
 
-def _component_modules() -> list[str]:
+def _isolated_modules() -> list[str]:
+    packages = (_COMPONENT, "voluptuous")
+    submodule_prefixes = tuple(f"{package}." for package in packages)
     return [
         name for name in sys.modules
-        if name == _COMPONENT or name.startswith(f"{_COMPONENT}.")
+        if name in packages or name.startswith(submodule_prefixes)
     ]
 
 
@@ -113,7 +115,9 @@ def _component_modules() -> list[str]:
 def home_assistant_stubs() -> Iterator[None]:
     """Keep stubs and imports that use them local to the requesting test module."""
     with pytest.MonkeyPatch.context() as patch:
-        for name in _component_modules():
+        # Keep standalone voluptuous inside the stubbed imports so it cannot
+        # interfere with Home Assistant installing its compatibility shim.
+        for name in _isolated_modules():
             patch.delitem(sys.modules, name)
 
         # Use a fresh parent so Python attaches the stub-backed integration to it.
@@ -125,5 +129,5 @@ def home_assistant_stubs() -> Iterator[None]:
         try:
             yield
         finally:
-            for name in _component_modules():
+            for name in _isolated_modules():
                 del sys.modules[name]
