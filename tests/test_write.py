@@ -1,70 +1,14 @@
 import asyncio
-import importlib.util
-from pathlib import Path
-import sys
 import types
 from typing import Any, Coroutine
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = PROJECT_ROOT / "custom_components" / "crestron_home"
-PACKAGE_NAME = "custom_components.crestron_home"
+from home_assistant_stubs import home_assistant_stubs
 
-# Ensure package namespace exists for dynamic imports.
-if "custom_components" not in sys.modules:
-    custom_components_pkg = types.ModuleType("custom_components")
-    custom_components_pkg.__path__ = [str(PROJECT_ROOT / "custom_components")]
-    sys.modules["custom_components"] = custom_components_pkg
+with home_assistant_stubs():
+    from homeassistant.exceptions import HomeAssistantError
 
-if PACKAGE_NAME not in sys.modules:
-    crestron_home_pkg = types.ModuleType(PACKAGE_NAME)
-    crestron_home_pkg.__path__ = [str(PACKAGE_ROOT)]
-    sys.modules[PACKAGE_NAME] = crestron_home_pkg
-
-# Minimal Home Assistant stubs required by the batcher module.
-homeassistant = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
-
-core_module = types.ModuleType("homeassistant.core")
-core_module.HomeAssistant = type("HomeAssistant", (), {})
-core_module.callback = lambda func: func
-homeassistant.core = core_module
-sys.modules["homeassistant.core"] = core_module
-
-exceptions_module = types.ModuleType("homeassistant.exceptions")
-exceptions_module.HomeAssistantError = type("HomeAssistantError", (Exception,), {})
-homeassistant.exceptions = exceptions_module
-sys.modules["homeassistant.exceptions"] = exceptions_module
-
-helpers_module = types.ModuleType("homeassistant.helpers")
-helpers_module.__path__ = []
-translation_module = types.ModuleType("homeassistant.helpers.translation")
-translation_module.async_get_cached_translations = (
-    lambda hass, language, category, domain: {}
-)
-helpers_module.translation = translation_module
-homeassistant.helpers = helpers_module
-sys.modules["homeassistant.helpers"] = helpers_module
-sys.modules["homeassistant.helpers.translation"] = translation_module
-
-write_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.write", PACKAGE_ROOT / "write.py"
-)
-write = importlib.util.module_from_spec(write_spec)
-assert write_spec and write_spec.loader
-sys.modules[write_spec.name] = write
-write_spec.loader.exec_module(write)
-
-api_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.api", PACKAGE_ROOT / "api.py"
-)
-api = importlib.util.module_from_spec(api_spec)
-assert api_spec and api_spec.loader
-sys.modules[api_spec.name] = api
-api_spec.loader.exec_module(api)
-
-ShadeWriteBatcher = write.ShadeWriteBatcher
-HomeAssistantError = exceptions_module.HomeAssistantError
-ShadeCommandResponse = api.ShadeCommandResponse
-ShadeCommandResult = api.ShadeCommandResult
+    from custom_components.crestron_home.api import ShadeCommandResponse, ShadeCommandResult
+    from custom_components.crestron_home.write import ShadeWriteBatcher
 
 
 class FakeHass:

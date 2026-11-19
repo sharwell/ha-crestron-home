@@ -1,9 +1,12 @@
-from custom_components.crestron_home.learning import LearningManager
-from custom_components.crestron_home.predictive_stop import (
-    PredictiveRuntime,
-    PredictiveStopPlanner,
-    ShadeStopInput,
-)
+from home_assistant_stubs import home_assistant_stubs
+
+with home_assistant_stubs():
+    from custom_components.crestron_home.learning import LearningManager
+    from custom_components.crestron_home.predictive_stop import (
+        PredictiveRuntime,
+        PredictiveStopPlanner,
+        ShadeStopInput,
+    )
 
 
 def _make_input(**kwargs) -> ShadeStopInput:

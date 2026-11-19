@@ -1,20 +1,21 @@
 from collections import deque
-from datetime import UTC, datetime
 
 import pytest
 
-from custom_components.crestron_home import coordinator as coordinator_module
-from custom_components.crestron_home.predictive_stop import PlanResult, ShadeStopTarget
-from custom_components.crestron_home.coordinator import StopPlanGroup, ShadesCoordinator
-from custom_components.crestron_home.visual_groups import (
-    IMPLICIT_GROUP_ID,
-    STANDALONE_PREFIX,
-    VISUAL_GROUPS_VERSION,
-    VisualGroupEntry,
-    VisualGroupsConfig,
-    parse_visual_groups,
-    update_visual_groups_option,
-)
+from home_assistant_stubs import home_assistant_stubs
+
+with home_assistant_stubs():
+    from custom_components.crestron_home.coordinator import ShadesCoordinator, StopPlanGroup
+    from custom_components.crestron_home.predictive_stop import PlanResult, ShadeStopTarget
+    from custom_components.crestron_home.visual_groups import (
+        IMPLICIT_GROUP_ID,
+        STANDALONE_PREFIX,
+        VISUAL_GROUPS_VERSION,
+        VisualGroupEntry,
+        VisualGroupsConfig,
+        parse_visual_groups,
+        update_visual_groups_option,
+    )
 
 
 def _make_config(groups=None, membership=None):
@@ -152,5 +153,4 @@ def test_handle_write_flush_records_groups() -> None:
     assert any(
         group["group_id"] == f"{STANDALONE_PREFIX}shade2" for group in entry["groups"]
     )
-coordinator_module.utcnow = lambda: datetime.now(UTC)
 

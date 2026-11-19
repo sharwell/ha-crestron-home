@@ -2,53 +2,24 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-import types
-import sys
-
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PACKAGE_ROOT = PROJECT_ROOT / "custom_components" / "crestron_home"
-PACKAGE_NAME = "custom_components.crestron_home"
+from home_assistant_stubs import home_assistant_stubs
 
-if "custom_components" not in sys.modules:
-    custom_components_pkg = types.ModuleType("custom_components")
-    custom_components_pkg.__path__ = [str(PROJECT_ROOT / "custom_components")]
-    sys.modules["custom_components"] = custom_components_pkg
-
-if PACKAGE_NAME not in sys.modules:
-    crestron_home_pkg = types.ModuleType(PACKAGE_NAME)
-    crestron_home_pkg.__path__ = [str(PACKAGE_ROOT)]
-    sys.modules[PACKAGE_NAME] = crestron_home_pkg
-
-calibration_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.calibration", PACKAGE_ROOT / "calibration.py"
-)
-calibration = importlib.util.module_from_spec(calibration_spec)
-assert calibration_spec and calibration_spec.loader
-sys.modules[calibration_spec.name] = calibration
-calibration_spec.loader.exec_module(calibration)
-
-const_spec = importlib.util.spec_from_file_location(
-    f"{PACKAGE_NAME}.const", PACKAGE_ROOT / "const.py"
-)
-const = importlib.util.module_from_spec(const_spec)
-assert const_spec and const_spec.loader
-sys.modules[const_spec.name] = const
-const_spec.loader.exec_module(const)
-
-DEFAULT_ANCHORS = calibration.DEFAULT_ANCHORS
-InvalidCalibrationError = calibration.InvalidCalibrationError
-pct_to_raw = calibration.pct_to_raw
-raw_to_pct = calibration.raw_to_pct
-validate_anchors = calibration.validate_anchors
-
-CAL_ANCHOR_RAW_MAX = const.CAL_ANCHOR_RAW_MAX
-ERR_ANCHORS_PC_ORDER = const.ERR_ANCHORS_PC_ORDER
-ERR_ANCHORS_RAW_MONOTONIC = const.ERR_ANCHORS_RAW_MONOTONIC
-ERR_ANCHORS_TOO_FEW = const.ERR_ANCHORS_TOO_FEW
+with home_assistant_stubs():
+    from custom_components.crestron_home.calibration import (
+        DEFAULT_ANCHORS,
+        InvalidCalibrationError,
+        pct_to_raw,
+        raw_to_pct,
+        validate_anchors,
+    )
+    from custom_components.crestron_home.const import (
+        CAL_ANCHOR_RAW_MAX,
+        ERR_ANCHORS_PC_ORDER,
+        ERR_ANCHORS_RAW_MONOTONIC,
+        ERR_ANCHORS_TOO_FEW,
+    )
 
 
 def test_pct_to_raw_default_mapping() -> None:
