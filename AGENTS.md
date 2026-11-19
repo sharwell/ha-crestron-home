@@ -187,12 +187,13 @@
   Respect generated output, unsupported formats, private data, caches, and
   deliberate exclusions. Check generator destinations first and preserve
   unrelated outputs, saved configurations, and release evidence.
-- From the repository root, run `python -m pytest` for Python behavior changes
-  or `python -m pytest tests/test_docs_options_flow.py` for the README/Options
-  flow contract. Use an environment with pytest and the imports needed by the
-  tests, including `aiohttp` and `voluptuous` for the full suite. The current
-  CI workflow runs Home Assistant's hassfest action. For a local hassfest run,
-  follow the [README development setup](README.md#development-setup).
+- From the repository root, install the test dependencies in a Python 3.12
+  environment with `python -m pip install -r requirements-test.txt`. Run
+  `python -m pytest` for Python behavior changes or
+  `python -m pytest tests/test_docs_options_flow.py` for the README/Options
+  flow contract. CI runs pytest on pull requests and pushes to `main`.
+  For a local run of the separate hassfest check, follow the
+  [README development setup](README.md#development-setup).
 - Choose checks by change and risk. Review prose and formatting for
   documentation-only work, run relevant generators for changed generated
   artifacts, and run applicable builds, behavior tests, and platform checks
