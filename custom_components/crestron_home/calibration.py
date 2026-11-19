@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import math
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "raw_to_pct",
     "remove_calibration_option",
     "update_calibration_option",
+    "update_minimum_position",
     "validate_anchors",
 ]
 
@@ -37,6 +39,7 @@ from .const import (
     ERR_ANCHORS_RAW_RANGE,
     ERR_ANCHORS_TOO_FEW,
     OPT_CALIBRATION,
+    OPT_MINIMUM_POSITIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -77,6 +80,7 @@ class CalibrationCollection:
 
     global_invert: bool
     per_shade: Mapping[str, ShadeCalibration]
+    minimum_positions: Mapping[str, int] = field(default_factory=dict)
 
     def for_shade(self, shade_id: str) -> ShadeCalibration:
         """Return calibration data for a shade."""
@@ -84,6 +88,26 @@ class CalibrationCollection:
         if shade_id in self.per_shade:
             return self.per_shade[shade_id]
         return ShadeCalibration()
+
+    def minimum_position(self, shade_id: str) -> int:
+        """Return the minimum Home Assistant position, with 0 allowing full travel."""
+        return self.minimum_positions.get(shade_id, CAL_ANCHOR_PC_MIN)
+
+    def limit_raw_target(self, shade_id: str, raw: int) -> int:
+        """Keep a controller target at or above the shade's configured minimum.
+
+        Preserve the supplied raw position when there is no minimum or it is
+        already allowed. Round the calibrated limit toward open on either axis.
+        """
+        minimum = self.minimum_position(shade_id)
+        if minimum == CAL_ANCHOR_PC_MIN:
+            return raw
+        calibration = self.for_shade(shade_id)
+        invert = calibration.resolved_invert(self.global_invert)
+        threshold = _interpolate_raw(minimum, calibration.anchors, invert)
+        if invert:
+            return min(raw, math.floor(threshold))
+        return max(raw, math.ceil(threshold))
 
 
 def _coerce_int(value: Any) -> int:
@@ -196,15 +220,23 @@ def _parse_shade_calibration(data: Mapping[str, Any]) -> ShadeCalibration:
 
 
 def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollection:
-    """Parse calibration settings from config entry options."""
+    """Parse calibration and per-shade minimum positions from config entry options."""
 
     global_invert = bool(options.get(CONF_INVERT, DEFAULT_INVERT))
     per_shade: dict[str, ShadeCalibration] = {}
+    raw_minimums = options.get(OPT_MINIMUM_POSITIONS, {})
+    minimums: dict[str, int] = {}
+    if isinstance(raw_minimums, Mapping):
+        minimums = {
+            str(shade_id): minimum
+            for shade_id, minimum in raw_minimums.items()
+            if type(minimum) is int and CAL_ANCHOR_PC_MIN < minimum <= CAL_ANCHOR_PC_MAX
+        }
     raw_calibration = options.get(OPT_CALIBRATION, {})
 
     if not isinstance(raw_calibration, Mapping):
         _LOGGER.warning("Calibration options were not a mapping; ignoring")
-        return CalibrationCollection(global_invert, per_shade)
+        return CalibrationCollection(global_invert, per_shade, minimums)
 
     for raw_shade_id, raw_data in raw_calibration.items():
         shade_id = str(raw_shade_id)
@@ -220,7 +252,7 @@ def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollecti
                 "Calibration entry for shade %s is invalid: %s", shade_id, err
             )
 
-    return CalibrationCollection(global_invert, per_shade)
+    return CalibrationCollection(global_invert, per_shade, minimums)
 
 
 def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
@@ -233,6 +265,11 @@ def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
     round to the nearest integer, and clamp the result to 0–65535.
     """
 
+    raw = round(_interpolate_raw(pct, anchors, invert_axis))
+    return max(CAL_ANCHOR_RAW_MIN, min(CAL_ANCHOR_RAW_MAX, raw))
+
+
+def _interpolate_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> float:
     pct_value = max(CAL_ANCHOR_PC_MIN, min(CAL_ANCHOR_PC_MAX, int(pct)))
     if invert_axis:
         pct_value = CAL_ANCHOR_PC_MAX - pct_value
@@ -255,12 +292,7 @@ def pct_to_raw(pct: int, anchors: Sequence[Anchor], invert_axis: bool) -> int:
                 raw = raw_start + (raw_end - raw_start) * ratio
                 break
 
-    raw_int = int(round(raw))
-    if raw_int < CAL_ANCHOR_RAW_MIN:
-        return CAL_ANCHOR_RAW_MIN
-    if raw_int > CAL_ANCHOR_RAW_MAX:
-        return CAL_ANCHOR_RAW_MAX
-    return raw_int
+    return raw
 
 
 def raw_to_pct(raw: int | None, anchors: Sequence[Anchor], invert_axis: bool) -> int | None:
@@ -344,3 +376,19 @@ def remove_calibration_option(options: MutableMapping[str, Any], shade_id: str) 
         calibration_root.pop(str(shade_id))
     if not calibration_root:
         options.pop(OPT_CALIBRATION, None)
+
+
+def update_minimum_position(
+    options: MutableMapping[str, Any], shade_id: str, minimum: int,
+) -> None:
+    """Store a validated 0–100 minimum, removing the limit when it is zero."""
+    stored = options.get(OPT_MINIMUM_POSITIONS)
+    minimums = dict(stored) if isinstance(stored, Mapping) else {}
+    if minimum:
+        minimums[shade_id] = minimum
+    else:
+        minimums.pop(shade_id, None)
+    if minimums:
+        options[OPT_MINIMUM_POSITIONS] = minimums
+    else:
+        options.pop(OPT_MINIMUM_POSITIONS, None)

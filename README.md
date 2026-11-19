@@ -38,14 +38,22 @@ Commands queued within the 80 ms batching window can share a controller request,
 with up to 16 shades per request. If several targets for one shade are queued
 before the request is sent, the latest target wins.
 
+To limit how far a shade can close, set **Minimum position (%)** under
+**Options → Calibrate a shade**, then apply it with **Save changes**. Close and
+position commands below that limit target the minimum. Set it back to 0% to
+allow full travel again. When assisted calibration skips an automatic move
+below a shade's minimum, it also skips recording that shade's anchor.
+
 ### Stop and hold-to-move
 
 **Predictive Stop** is enabled by default. It estimates where moving shades will
 stop using learned travel speed, command latency, and deceleration. Stop is
 best effort because the Crestron REST API lacks a native stop command.
+If a shade is already below its configured minimum, Stop sends it to the
+minimum. This can move the shade or reverse its direction.
 
-If you turn off **Options → Predictive Stop**, Stop sends the latest known
-position back to the controller. It skips a shade when there is no known
+If you turn off **Options → Predictive Stop**, Stop targets the latest known
+position, subject to the minimum. It skips a shade when there is no known
 position. To clear learned parameters, open **Options → Reset learned
 parameters** and select the shade. The model learns again as the shade moves.
 

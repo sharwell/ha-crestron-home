@@ -41,6 +41,9 @@ flowchart TD
 2. Adjust the anchors or the shade's **Invert axis** setting. Keep the 0% and
    100% endpoints. Percentages must increase, and raw positions may stay the
    same or increase.
+   Set **Minimum position (%)** to limit how far this shade can close. A value
+   of 0 allows full travel. **Reset to defaults** resets the curve and axis and
+   keeps the minimum.
 3. Choose **Save calibration** and select **Apply**. A valid curve becomes
    pending, and the form returns to **Select a shade**. To discard the current
    edit, choose **Back** and select **Apply**. This also returns to the shade

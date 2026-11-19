@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 import sys
+import time
 from types import MappingProxyType
 
 import pytest
@@ -17,14 +18,22 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er, 
 from custom_components.crestron_home.api import ShadeCommandResponse
 from custom_components.crestron_home.calibration import parse_calibration_options
 from custom_components.crestron_home.const import (
+    CONF_INVERT,
+    DATA_CALIBRATIONS,
+    DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
     DOMAIN,
     OPT_CALIBRATION,
+    OPT_MINIMUM_POSITIONS,
+    PREDICTIVE_STORAGE_KEY_PREFIX,
+    PREDICTIVE_STORAGE_VERSION,
 )
 from custom_components.crestron_home.coordinator import ShadesCoordinator
+from custom_components.crestron_home.cover import CrestronHomeShade
 from custom_components.crestron_home.learning import LearningManager
 from custom_components.crestron_home.predictive_stop import PredictiveRuntime
+from custom_components.crestron_home.storage import PredictiveStopStore
 from custom_components.crestron_home.visual_groups import (
     OPT_VISUAL_GROUPS,
     parse_visual_groups,
@@ -41,6 +50,7 @@ class FakeCrestronController:
 
     def __init__(self) -> None:
         self.position = 0
+        self.other_shades: list[dict[str, object]] = []
         self.writes: list[list[dict[str, str | int]]] = []
 
     async def async_get_shades(self) -> list[dict[str, object]]:
@@ -50,7 +60,8 @@ class FakeCrestronController:
                 "name": "Test shade",
                 "position": self.position,
                 "connectionStatus": "connected",
-            }
+            },
+            *self.other_shades,
         ]
 
     async def async_set_shade_positions(
@@ -83,7 +94,7 @@ async def hass(
 
 @pytest_asyncio.fixture
 async def calibration(
-    hass: HomeAssistant,
+    hass: HomeAssistant, request: pytest.FixtureRequest,
 ) -> AsyncIterator[tuple[ConfigEntry, FakeCrestronController, ShadesCoordinator]]:
     entry = ConfigEntry(
         domain=DOMAIN,
@@ -95,7 +106,7 @@ async def calibration(
                 "groups": {GROUP_ID: {"name": "Lounge"}},
                 "membership": {SHADE_ID: GROUP_ID},
             }
-        },
+        } | getattr(request, "param", {}),
         source="user",
         version=1,
         minor_version=1,
@@ -114,13 +125,21 @@ async def calibration(
         min_confidence_scale=0.25,
         history_size=5,
     )
+    calibrations = parse_calibration_options(entry.options)
     coordinator = ShadesCoordinator(
         hass, controller, entry, predictive,
-        parse_calibration_options(entry.options), parse_visual_groups(entry.options),
+        calibrations, parse_visual_groups(entry.options),
     )
-    batcher = ShadeWriteBatcher(hass, controller)
+    batcher = ShadeWriteBatcher(
+        hass, controller, get_calibrations=lambda: parse_calibration_options(entry.options),
+    )
     hass.data[DOMAIN] = {
         entry.entry_id: {
+            DATA_CALIBRATIONS: calibrations,
+            DATA_PREDICTIVE_STORAGE: PredictiveStopStore(
+                hass, entry_id=entry.entry_id, version=PREDICTIVE_STORAGE_VERSION,
+                key_prefix=PREDICTIVE_STORAGE_KEY_PREFIX,
+            ),
             DATA_SHADES_COORDINATOR: coordinator,
             DATA_WRITE_BATCHER: batcher,
         }
@@ -252,6 +271,118 @@ async def _finish_manual(hass: HomeAssistant, flow_id: str) -> None:
     assert menu["type"] is FlowResultType.MENU
     result = await options.async_configure(flow_id, {"next_step_id": "finish"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def _save_shade_minimum(hass: HomeAssistant, entry: ConfigEntry, minimum: int) -> None:
+    editor = await _open_manual_editor(hass, entry)
+    flow_id = editor["flow_id"]
+    options = hass.config_entries.options
+    picker = await options.async_configure(
+        flow_id, {"minimum_position": minimum, "action": "save"},
+    )
+    assert picker["step_id"] == "select_shade"
+    await _finish_manual(hass, flow_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("calibration", "raw_minimum", "raw_quarter", "raw_closed", "other_closed"),
+    [
+        ({CONF_INVERT: False}, 6554, 16384, 0, 0),
+        ({CONF_INVERT: True}, 58981, 49151, 65535, 65535),
+        (
+            {CONF_INVERT: False, OPT_CALIBRATION: {SHADE_ID: {
+                "anchors": [[0, 1000], [20, 5001], [100, 65000]],
+            }}},
+            3001, 8751, 1000, 0,
+        ),
+    ],
+    indirect=["calibration"],
+    ids=["normal", "inverted", "calibrated"],
+)
+async def test_minimum_limits_each_shade_in_a_batch_and_can_be_cleared(
+    hass, calibration, raw_minimum, raw_quarter, raw_closed, other_closed,
+):
+    entry, controller, coordinator = calibration
+    controller.other_shades.append({
+        "id": "shade-2", "name": "Second shade", "position": other_closed,
+        "connectionStatus": "connected",
+    })
+    await coordinator.async_refresh()
+    await _save_shade_minimum(hass, entry, 10)
+    assert entry.options[OPT_MINIMUM_POSITIONS] == {SHADE_ID: 10}
+    reopened = await _open_manual_editor(hass, entry)
+    assert reopened["data_schema"]({})["minimum_position"] == 10
+    hass.config_entries.options.async_abort(reopened["flow_id"])
+
+    shade = CrestronHomeShade(coordinator, entry, SHADE_ID)
+    other_shade = CrestronHomeShade(coordinator, entry, "shade-2")
+    await asyncio.wait_for(
+        asyncio.gather(shade.async_close_cover(), other_shade.async_close_cover()),
+        timeout=5,
+    )
+    assert len(controller.writes) == 1
+    assert {item["id"]: item["position"] for item in controller.writes[0]} == {
+        SHADE_ID: raw_minimum, "shade-2": other_closed,
+    }
+
+    for percentage, expected in ((5, raw_minimum), (10, raw_minimum), (25, raw_quarter)):
+        await asyncio.wait_for(shade.async_set_cover_position(position=percentage), timeout=5)
+        assert controller.writes[-1] == [{"id": SHADE_ID, "position": expected}]
+
+    await _save_shade_minimum(hass, entry, 0)
+    assert OPT_MINIMUM_POSITIONS not in entry.options
+    await asyncio.wait_for(shade.async_close_cover(), timeout=5)
+    assert controller.writes[-1] == [{"id": SHADE_ID, "position": raw_closed}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration", [{OPT_MINIMUM_POSITIONS: {SHADE_ID: 10}}], indirect=True,
+)
+@pytest.mark.parametrize("predictive_enabled", [False, True], ids=["direct", "predictive"])
+async def test_stop_below_minimum_sends_the_minimum(hass, calibration, predictive_enabled):
+    entry, controller, coordinator = calibration
+    controller.position = 3277  # About 5% open.
+    await coordinator.async_refresh()
+    runtime = coordinator.predictive
+    runtime.enabled = predictive_enabled
+    if predictive_enabled:
+        now = time.monotonic()
+        runtime.record_poll(SHADE_ID, timestamp=now - 0.05, position=0.04)
+        runtime.record_poll(SHADE_ID, timestamp=now, position=0.05)
+        plan = runtime.plan_stop([SHADE_ID], timestamp=now)
+        assert plan.targets[0].position > 0.10
+
+    shade = CrestronHomeShade(coordinator, entry, SHADE_ID)
+    await asyncio.wait_for(shade.async_stop_cover(), timeout=5)
+    assert controller.writes == [[{"id": SHADE_ID, "position": 6554}]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration", [{OPT_MINIMUM_POSITIONS: {SHADE_ID: 10}}], indirect=True,
+)
+async def test_assisted_calibration_skips_moves_and_anchors_below_minimum(hass, calibration):
+    entry, controller, coordinator = calibration
+    controller.position = 4200
+    await coordinator.async_refresh()
+    flow_id = await _start_assisted(hass, entry)
+    options = hass.config_entries.options
+    stage = await asyncio.wait_for(
+        options.async_configure(
+            flow_id, {"target_percent": 5, "mode": "automatic", "action": "stage"},
+        ),
+        timeout=5,
+    )
+    assert "below its minimum position" in stage["description_placeholders"]["warnings"]
+    assert not controller.writes
+
+    result = await options.async_configure(flow_id, {"action": "record"})
+    assert "skipped Test shade" in result["description_placeholders"]["status"]
+    await options.async_configure(flow_id, {"action": "back"})
+    await _finish_assisted(hass, flow_id)
+    assert OPT_CALIBRATION not in entry.options
 
 
 @pytest.mark.asyncio

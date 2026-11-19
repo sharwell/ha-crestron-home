@@ -31,6 +31,7 @@ from .calibration import (
     raw_to_pct,
     remove_calibration_option,
     update_calibration_option,
+    update_minimum_position,
     validate_anchors,
 )
 from .const import (
@@ -241,6 +242,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._selected_shade_id: str | None = None
         self._working_anchors: list[dict[str, int]] | None = None
         self._working_invert_override: bool | None = None
+        self._working_minimum_position = 0
         self._selected_group_id: str | None = None
         self._assisted_group_id: str | None = None
         self._assisted_members: list[str] = []
@@ -248,7 +250,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings: list[str] = []
-        self._assisted_active_members: list[str] = []
+        self._assisted_minimum_skips: set[str] = set()
         self._assisted_feedback: dict[str, object] | None = None
         self._assisted_snapshot: dict[str, tuple[ShadeCalibration, bool]] | None = None
         self._assisted_last_run: AssistedCalibrationRun | None = None
@@ -315,7 +317,10 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                     label = f"{shade.name} ({shade_id})"
                 choices[shade_id] = label
         else:
-            for shade_id in sorted(self._calibration_collection.per_shade.keys()):
+            for shade_id in sorted(
+                self._calibration_collection.per_shade.keys()
+                | self._calibration_collection.minimum_positions.keys()
+            ):
                 choices[shade_id] = shade_id
         if use_entity_names and choices:
             registry = er.async_get(self.hass)
@@ -415,6 +420,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             {"pc": anchor[0], "raw": anchor[1]} for anchor in calibration.anchors
         ]
         self._working_invert_override = calibration.invert_override
+        self._working_minimum_position = self._calibration_collection.minimum_position(shade_id)
 
     def _anchors_from_input(self, user_input: Mapping[str, Any]) -> list[dict[str, int]]:
         assert self._working_anchors is not None
@@ -1077,7 +1083,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_minimum_skips.clear()
 
     def _assisted_group_members(self, group_id: str) -> list[str]:
         members = [
@@ -1102,7 +1108,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_minimum_skips.clear()
         return True
 
     def _assisted_member_labels(self, members: Sequence[str]) -> list[str]:
@@ -1137,7 +1143,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def _assisted_perform_stage(self) -> None:
         coordinator = self._coordinator
         self._assisted_stage_warnings = []
-        self._assisted_active_members = []
+        self._assisted_minimum_skips.clear()
         if coordinator is None:
             self._assisted_stage_warnings.append("Controller unavailable")
             self._assisted_stage_sent = True
@@ -1157,7 +1163,6 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 continue
             available.append(shade_id)
 
-        self._assisted_active_members = available
         self._assisted_stage_sent = True
 
         if self._assisted_use_current_position or not available:
@@ -1169,11 +1174,25 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             return
 
         target = self._assisted_target_percent or 0
+        # Pending edits can change the raw mapping, but the writer still applies
+        # the saved limit. Do not stage a target it would have to replace.
+        active_calibrations = parse_calibration_options(self._config_entry.options)
         tasks = []
         for shade_id in available:
             calibration = self._calibration_collection.for_shade(shade_id)
             invert = calibration.resolved_invert(self._calibration_collection.global_invert)
             raw = pct_to_raw(target, calibration.anchors, invert)
+            raw = self._calibration_collection.limit_raw_target(shade_id, raw)
+            if (
+                target < self._calibration_collection.minimum_position(shade_id)
+                or active_calibrations.limit_raw_target(shade_id, raw) != raw
+            ):
+                self._assisted_minimum_skips.add(shade_id)
+                label = self._assisted_member_labels([shade_id])[0]
+                self._assisted_stage_warnings.append(
+                    f"{label}: move would go below its minimum position"
+                )
+                continue
             tasks.append(batcher.enqueue(shade_id, raw))
 
         if tasks:
@@ -1214,7 +1233,11 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         for shade_id in self._assisted_members:
             shade = coordinator.data.get(shade_id)
-            if not isinstance(shade, Shade) or shade.position is None:
+            if (
+                shade_id in self._assisted_minimum_skips
+                or not isinstance(shade, Shade)
+                or shade.position is None
+            ):
                 skipped.append(shade_id)
                 continue
             calibration = self._calibration_collection.for_shade(shade_id)
@@ -1296,6 +1319,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 self._working_invert_override = self._invert_from_form(
                     user_input.get("invert_axis")
                 )
+                self._working_minimum_position = user_input["minimum_position"]
                 action_raw = user_input.get("action")
                 if action_raw is None:
                     action = "save"
@@ -1373,6 +1397,10 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                             update_calibration_option(
                                 self._options, self._selected_shade_id, calibration
                             )
+                        update_minimum_position(
+                            self._options, self._selected_shade_id,
+                            self._working_minimum_position,
+                        )
                         self._calibration_collection = parse_calibration_options(
                             self._options
                         )
@@ -1423,6 +1451,12 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
             "invert_axis",
             default=self._invert_to_form(self._working_invert_override),
         )] = invert_selector
+        schema_dict[vol.Required(
+            "minimum_position", default=self._working_minimum_position,
+        )] = vol.All(
+            vol.Coerce(int),
+            vol.Range(min=CAL_ANCHOR_PC_MIN, max=CAL_ANCHOR_PC_MAX),
+        )
 
         action_selector = selector.selector(
             {

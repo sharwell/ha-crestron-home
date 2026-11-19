@@ -209,12 +209,14 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         ).result()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
+        """Send stop targets, returning shades below their minimum to the limit."""
         predictive = self.coordinator.predictive
         if predictive.enabled:
             shade_ids = predictive.moving_shades()
             if self._shade_id not in shade_ids:
                 shade_ids.append(self._shade_id)
             calibrations = self._calibration_collection
+            shades = self.coordinator.data or {}
             group_plans = self.coordinator.plan_stop(shade_ids)
             any_commands = False
             for group_plan in group_plans:
@@ -227,6 +229,15 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
                     invert = cal.resolved_invert(calibrations.global_invert)
                     pct = int(round(max(0.0, min(1.0, target.position)) * 100))
                     raw = pct_to_raw(pct, cal.anchors, invert)
+                    if calibrations.minimum_position(target.shade_id):
+                        shade = shades.get(target.shade_id)
+                        current = shade.position if shade else None
+                        if current is None and target.shade_id == self._shade_id:
+                            current = self._resolve_current_raw_position()
+                        if current is not None:
+                            limited = calibrations.limit_raw_target(target.shade_id, current)
+                            if limited != current:
+                                raw = limited
                     commands.append((target.shade_id, raw))
                 if not commands:
                     continue

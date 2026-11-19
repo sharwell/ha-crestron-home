@@ -85,12 +85,14 @@
         "description": "Adjust anchors so the shade reports consistent visual positions. The first anchor must remain at 0% and the last at 100%.",
         "data": {
           "invert_axis": "Invert axis",
+          "minimum_position": "Minimum position (%)",
           "action": "Action",
           "insert_after": "Insert anchor between",
           "remove_index": "Remove anchor"
         },
         "data_description": {
           "invert_axis": "Choose whether this shade should flip the visual axis relative to the global default.",
+          "minimum_position": "Set the lowest allowed position for this shade. Use 0 for full travel. Stop moves a shade up to the minimum if it is already below it.",
           "action": "Save changes or add/remove anchors before saving.",
           "insert_after": "Pick where the new anchor should be inserted when adding.",
           "remove_index": "Select which anchor to remove. The first and last anchors cannot be removed."

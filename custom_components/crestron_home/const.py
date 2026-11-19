@@ -9,6 +9,7 @@ SHADE_POSITION_MAX = 65535
 CONF_API_TOKEN = "api_token"
 CONF_INVERT = "invert"
 OPT_CALIBRATION = "calibration"
+OPT_MINIMUM_POSITIONS = "minimum_positions"
 CAL_KEY_ANCHORS = "anchors"
 CAL_KEY_INVERT = "invert"
 

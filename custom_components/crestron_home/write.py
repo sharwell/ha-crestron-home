@@ -15,6 +15,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.translation import async_get_cached_translations
 
 from .api import ApiClient, CrestronHomeApiError, ShadeCommandFailedError, ShadeCommandResult
+from .calibration import CalibrationCollection
 from .const import (
     BATCH_DEBOUNCE_MS,
     BATCH_MAX_ITEMS,
@@ -33,7 +34,11 @@ class _QueuedItem:
 
 
 class ShadeWriteBatcher:
-    """Batch writes to the Crestron Home shade API."""
+    """Batch writes to the Crestron Home shade API.
+
+    When supplied, get_calibrations provides the current per-shade limits at
+    dispatch time. Flush callbacks receive the limited payload actually sent.
+    """
 
     def __init__(
         self,
@@ -42,6 +47,7 @@ class ShadeWriteBatcher:
         *,
         debounce_ms: int = BATCH_DEBOUNCE_MS,
         max_items: int = BATCH_MAX_ITEMS,
+        get_calibrations: Callable[[], CalibrationCollection] | None = None,
         on_success: Callable[[], None] | None = None,
         on_flush: Callable[[Sequence[dict[str, int]], str | None], None] | None = None,
     ) -> None:
@@ -49,6 +55,7 @@ class ShadeWriteBatcher:
         self._client = client
         self._debounce_seconds = max(0, debounce_ms) / 1000
         self._max_items = max(1, max_items)
+        self._get_calibrations = get_calibrations
         self._lock = asyncio.Lock()
         self._queue: dict[str, _QueuedItem] = {}
         self._waiters: dict[str, list[asyncio.Future[None]]] = defaultdict(list)
@@ -132,8 +139,15 @@ class ShadeWriteBatcher:
         items: list[_QueuedItem],
         waiters: dict[str, list[asyncio.Future[None]]],
     ) -> None:
+        calibrations = self._get_calibrations() if self._get_calibrations else None
         payload_items = [
-            {"id": item.shade_id, "position": item.position}
+            {
+                "id": item.shade_id,
+                "position": (
+                    calibrations.limit_raw_target(item.shade_id, item.position)
+                    if calibrations else item.position
+                ),
+            }
             for item in items
         ]
         ids = [item.shade_id for item in items]
