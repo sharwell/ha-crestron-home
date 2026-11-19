@@ -62,8 +62,9 @@ calibration.
 2. Accept the suggested midpoint of the largest remaining gap or enter your own
    target percentage. **Automatic** stages a move when you continue. Choose
    **From current location** to work with the current positions without sending
-   a staging move. If the saved minimum prevents the requested move before it
-   is sent, the shade is skipped for that recording.
+   a staging move. In **Automatic** mode, recording skips shades whose staging
+   command was skipped or failed, including offline shades and moves blocked by
+   a minimum position.
 3. On the alignment screen, align the shades as needed, choose **Record
    anchors**, and select **Continue**. The integration adds new or revised
    anchors to the pending calibration. It skips unchanged anchors and shades

@@ -53,6 +53,7 @@ class FakeCrestronController:
 
     def __init__(self) -> None:
         self.position = 0
+        self.connection_status = "connected"
         self.other_shades: list[dict[str, object]] = []
         self.writes: list[list[dict[str, str | int]]] = []
 
@@ -62,7 +63,7 @@ class FakeCrestronController:
                 "id": SHADE_ID,
                 "name": "Test shade",
                 "position": self.position,
-                "connectionStatus": "connected",
+                "connectionStatus": self.connection_status,
             },
             *self.other_shades,
         ]
@@ -647,6 +648,51 @@ async def test_assisted_calibration_skips_moves_and_anchors_below_minimum(hass, 
     await options.async_configure(flow_id, {"action": "back"})
     await _finish_assisted(hass, flow_id)
     assert OPT_CALIBRATION not in entry.options
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "calibration", [{OPT_MINIMUM_POSITIONS: {SHADE_ID: 10}}], indirect=True,
+)
+@pytest.mark.parametrize(
+    ("mode", "reconnect"),
+    [("automatic", False), ("automatic", True), ("current", False)],
+    ids=["automatic-offline", "automatic-reconnected", "from-current-location"],
+)
+async def test_offline_assisted_shade_records_only_from_current_location(
+    hass, calibration, mode, reconnect,
+):
+    entry, controller, coordinator = calibration
+    controller.position = 1000
+    controller.connection_status = "offline"
+    await coordinator.async_refresh()
+    flow_id = await _start_assisted(hass, entry)
+    options = hass.config_entries.options
+    stage = await asyncio.wait_for(
+        options.async_configure(
+            flow_id, {"target_percent": 5, "mode": mode, "action": "stage"},
+        ),
+        timeout=5,
+    )
+    assert "offline" in stage["description_placeholders"]["warnings"]
+    assert not controller.writes
+    if reconnect:
+        controller.connection_status = "connected"
+        await coordinator.async_refresh()
+
+    result = await options.async_configure(flow_id, {"action": "record"})
+    await options.async_configure(flow_id, {"action": "back"})
+    await _finish_assisted(hass, flow_id)
+    assert entry.options[OPT_MINIMUM_POSITIONS] == {SHADE_ID: 10}
+    status = result["description_placeholders"]["status"]
+    if mode == "automatic":
+        assert "skipped Test shade" in status
+        assert OPT_CALIBRATION not in entry.options
+    else:
+        assert "saved Test shade" in status
+        assert entry.options[OPT_CALIBRATION][SHADE_ID]["anchors"][1] == {
+            "pc": 5, "raw": 1000,
+        }
 
 
 @pytest.mark.asyncio

@@ -251,7 +251,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings: list[str] = []
-        self._assisted_stage_skips: set[str] = set()
+        self._assisted_staged_members: set[str] = set()
         self._assisted_feedback: dict[str, object] | None = None
         self._assisted_snapshot: dict[str, tuple[ShadeCalibration, bool]] | None = None
         self._assisted_last_run: AssistedCalibrationRun | None = None
@@ -1123,7 +1123,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_stage_skips.clear()
+        self._assisted_staged_members.clear()
 
     def _assisted_group_members(self, group_id: str) -> list[str]:
         members = [
@@ -1148,7 +1148,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_use_current_position = False
         self._assisted_stage_sent = False
         self._assisted_stage_warnings = []
-        self._assisted_stage_skips.clear()
+        self._assisted_staged_members.clear()
         return True
 
     def _assisted_member_labels(self, members: Sequence[str]) -> list[str]:
@@ -1183,7 +1183,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
     async def _assisted_perform_stage(self) -> None:
         coordinator = self._coordinator
         self._assisted_stage_warnings = []
-        self._assisted_stage_skips.clear()
+        self._assisted_staged_members.clear()
         if coordinator is None:
             self._assisted_stage_warnings.append("Controller unavailable")
             self._assisted_stage_sent = True
@@ -1235,7 +1235,6 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                     targets[shade_id] = raw
                     continue
                 warning = "move would go below its minimum position"
-            self._assisted_stage_skips.add(shade_id)
             label = self._assisted_member_labels([shade_id])[0]
             self._assisted_stage_warnings.append(f"{label}: {warning}")
 
@@ -1251,7 +1250,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                 shade_id: result for shade_id, result in zip(targets, results, strict=True)
                 if isinstance(result, BaseException)
             }
-            self._assisted_stage_skips.update(failures)
+            self._assisted_staged_members.update(targets.keys() - failures.keys())
             for shade_id, error in failures.items():
                 if isinstance(error, HomeAssistantError):
                     label = self._assisted_member_labels([shade_id])[0]
@@ -1294,10 +1293,11 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
 
         for shade_id in self._assisted_members:
             shade = coordinator.data.get(shade_id)
+            was_staged = shade_id in self._assisted_staged_members
             if (
-                shade_id in self._assisted_stage_skips
-                or not isinstance(shade, Shade)
+                not isinstance(shade, Shade)
                 or shade.position is None
+                or (not self._assisted_use_current_position and not was_staged)
             ):
                 skipped.append(shade_id)
                 continue
