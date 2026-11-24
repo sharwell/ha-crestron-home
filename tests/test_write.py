@@ -1,5 +1,6 @@
 import asyncio
 from collections import Counter
+import logging
 import types
 from typing import Any, Coroutine
 
@@ -78,7 +79,7 @@ class _ReauthController:
 
 
 @pytest.mark.parametrize("raise_minimum", [False, True], ids=["unchanged", "raised"])
-def test_write_retry_rechecks_current_minimum(monkeypatch, raise_minimum):
+def test_write_retry_rechecks_current_minimum(monkeypatch, caplog, raise_minimum):
     async def _async_test():
         hass = FakeHass(asyncio.get_running_loop())
         controller = _ReauthController()
@@ -111,7 +112,12 @@ def test_write_retry_rechecks_current_minimum(monkeypatch, raise_minimum):
             controller.reauth_complete.set()
             await asyncio.wait_for(batcher.async_shutdown(), timeout=5)
 
-    asyncio.run(_async_test())
+    with caplog.at_level(logging.DEBUG, logger="custom_components.crestron_home"):
+        asyncio.run(_async_test())
+    assert "SetState returned HTTP 401" in caplog.text
+    assert "SetState returned HTTP 200" in caplog.text
+    for private in ("controller.invalid", "fictional-token", "fictional-key-", "'shade-1'"):
+        assert private not in caplog.text
 
 
 @pytest.mark.parametrize("require_exact", [False, True], ids=["coalesced", "exact"])
@@ -157,7 +163,7 @@ def test_batcher_deduplicates_latest_position(require_exact: bool) -> None:
     asyncio.run(_async_test())
 
 
-def test_batcher_partial_failure_propagates() -> None:
+def test_batcher_partial_failure_propagates_with_safe_details(caplog) -> None:
     """Partial failures should raise only for the affected shade."""
 
     async def _async_test() -> None:
@@ -169,8 +175,10 @@ def test_batcher_partial_failure_propagates() -> None:
                 return ShadeCommandResponse(
                     status="partial",
                     results={
-                        "shade-1": ShadeCommandResult(status="success"),
-                        "shade-2": ShadeCommandResult(status="failure", message="offline"),
+                        "private-shade-S1": ShadeCommandResult(status="success"),
+                        "private-shade-S2": ShadeCommandResult(
+                            status="failure", message="unexpected controller text with fictional key",
+                        ),
                     },
                 )
 
@@ -178,8 +186,8 @@ def test_batcher_partial_failure_propagates() -> None:
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(
-                    batcher.enqueue("shade-1", 1000),
-                    batcher.enqueue("shade-2", 2000),
+                    batcher.enqueue("private-shade-S1", 1000),
+                    batcher.enqueue("private-shade-S2", 2000),
                     return_exceptions=True,
                 ),
                 timeout=5,
@@ -189,9 +197,51 @@ def test_batcher_partial_failure_propagates() -> None:
 
         assert results[0] is None
         assert isinstance(results[1], HomeAssistantError)
-        assert "shade-2" in str(results[1])
+        summary = next(record.batch for record in caplog.records if hasattr(record, "batch"))
+        shade_alias = summary["ids"][1]
+        assert shade_alias.startswith("shade-")
+        assert summary["status"] == "partial"
+        assert shade_alias in str(results[1])
+        assert shade_alias in caplog.text
+        for private in ("private-shade", "unexpected controller text", "fictional key"):
+            assert private not in str(results[1])
+            assert private not in caplog.text
+            assert private not in repr(summary)
 
-    asyncio.run(_async_test())
+    with caplog.at_level(logging.DEBUG, logger="custom_components.crestron_home"):
+        asyncio.run(_async_test())
+
+
+def test_login_transport_failure_keeps_controller_details_out_of_traceback(
+    monkeypatch, caplog,
+) -> None:
+    """Verify the traceback a caller can log after a transport failure."""
+
+    async def run():
+        hass = FakeHass(asyncio.get_running_loop())
+        private_host = "fictional-controller.invalid"
+        private_token = "fictional-access-token"
+
+        class FailingTransport:
+            def get(self, url, *, headers, **_kwargs):
+                assert private_host in url
+                assert private_token in headers.values()
+                raise api.ClientError(f"Error with {url} and {headers}")
+
+        monkeypatch.setattr(api, "async_get_clientsession", lambda _hass: FailingTransport())
+        client = api.ApiClient(hass, private_host, private_token)
+        try:
+            await client.async_login()
+        except api.CannotConnectError:
+            logging.getLogger(__name__).exception("Setup could not connect")
+        else:
+            pytest.fail("Expected login to fail")
+
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(run())
+    assert "Error communicating with controller" in caplog.text
+    assert "fictional-controller.invalid" not in caplog.text
+    assert "fictional-access-token" not in caplog.text
 
 
 def test_batcher_flush_callback_receives_payload() -> None:

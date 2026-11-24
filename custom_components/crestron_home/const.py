@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 DOMAIN = "crestron_home"
+CONFIG_ENTRY_MINOR_VERSION = 2
+DEFAULT_ENTRY_TITLE = "Crestron Home"
 
 SHADE_POSITION_MAX = 65535
 

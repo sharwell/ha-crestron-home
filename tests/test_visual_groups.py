@@ -108,7 +108,16 @@ async def test_plan_stop_invalid_group_logs(
     coordinator = make_coordinator({OPT_VISUAL_GROUPS: config.as_options()})
     with caplog.at_level("WARNING"):
         coordinator.plan_stop(["shade1"])
-    assert any("ghost" in record.message for record in caplog.records)
+        coordinator.plan_stop(["shade1"])
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "referenced in membership but not defined" in record.getMessage()
+    ]
+    assert len(messages) == 2
+    assert messages[0] == messages[1]
+    assert messages[0].startswith("Visual group group-")
+    assert "ghost" not in caplog.text
 
 
 @pytest.mark.asyncio

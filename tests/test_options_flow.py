@@ -2,7 +2,10 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+import json
+import logging
 from pathlib import Path
+import re
 import sys
 import time
 from types import MappingProxyType
@@ -11,17 +14,22 @@ import pytest
 import pytest_asyncio
 from homeassistant import loader
 from homeassistant.config_entries import ConfigEntries, ConfigEntry, ConfigFlowResult
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er, frame
 from homeassistant.helpers.config_validation import custom_serializer
 from probatio import to_field_list
 
+from custom_components.crestron_home import async_migrate_entry
+from custom_components.crestron_home import config_flow
 from custom_components.crestron_home.api import ShadeCommandResponse
 from custom_components.crestron_home.calibration import parse_calibration_options
 from custom_components.crestron_home.const import (
+    CONF_API_TOKEN,
     CONF_INVERT,
     DATA_CALIBRATIONS,
+    DATA_PREDICTIVE_MANAGER,
     DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
@@ -34,9 +42,10 @@ from custom_components.crestron_home.const import (
 )
 from custom_components.crestron_home.coordinator import ShadesCoordinator
 from custom_components.crestron_home.cover import CrestronHomeShade
+from custom_components.crestron_home.diagnostics import async_get_config_entry_diagnostics
 from custom_components.crestron_home.learning import LearningManager
 from custom_components.crestron_home.predictive_stop import PredictiveRuntime
-from custom_components.crestron_home.storage import PredictiveStopStore
+from custom_components.crestron_home.storage import PredictiveStopStore, PredictiveStoreData
 from custom_components.crestron_home.visual_groups import (
     OPT_VISUAL_GROUPS,
     parse_visual_groups,
@@ -138,10 +147,13 @@ async def calibration(
     )
     batcher = ShadeWriteBatcher(
         hass, controller, get_calibrations=lambda: parse_calibration_options(entry.options),
+        log_aliases=coordinator.log_aliases,
+        on_flush=coordinator.handle_write_flush,
     )
     hass.data[DOMAIN] = {
         entry.entry_id: {
             DATA_CALIBRATIONS: calibrations,
+            DATA_PREDICTIVE_MANAGER: predictive,
             DATA_PREDICTIVE_STORAGE: PredictiveStopStore(
                 hass, entry_id=entry.entry_id, version=PREDICTIVE_STORAGE_VERSION,
                 key_prefix=PREDICTIVE_STORAGE_KEY_PREFIX,
@@ -200,6 +212,133 @@ async def _finish_assisted(hass: HomeAssistant, flow_id: str) -> None:
     assert menu["type"] is FlowResultType.MENU
     result = await options.async_configure(flow_id, {"next_step_id": "finish"})
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+@pytest.mark.asyncio
+async def test_setup_logs_room_count_without_controller_details(hass, monkeypatch, caplog):
+    class SetupController:
+        async def async_get_rooms(self):
+            return [{"id": "fictional-room-id", "name": "fictional-room-name"}]
+
+        async def async_logout(self):
+            pass
+
+    monkeypatch.setattr(config_flow, "ApiClient", lambda *_args, **_kwargs: SetupController())
+    with caplog.at_level(logging.DEBUG, logger="custom_components.crestron_home"):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": "user"},
+            data={
+                CONF_HOST: "fictional-controller.invalid",
+                CONF_API_TOKEN: "fictional-setup-token",
+            },
+        )
+
+    assert result["step_id"] == "confirm"
+    assert result["description_placeholders"]["rooms"] == "1"
+    assert "Connection test succeeded with rooms=1" in caplog.text
+    assert "fictional-" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_aliases_link_stop_batch_and_assisted_calibration(
+    hass, calibration, caplog,
+):
+    entry, controller, coordinator = calibration
+    hass.config_entries.async_update_entry(
+        entry,
+        data={CONF_HOST: "fictional-crestron.invalid", CONF_API_TOKEN: "fictional-private-token"},
+    )
+    other_shade = "fictional-standalone-shade"
+    controller.other_shades = [
+        {"id": other_shade, "position": 1234, "roomId": "fictional-room"},
+        {"name": "fictional-malformed-payload"},
+    ]
+    with caplog.at_level(logging.DEBUG, logger="custom_components.crestron_home"):
+        await coordinator.async_refresh()
+        await asyncio.wait_for(
+            CrestronHomeShade(coordinator, entry, SHADE_ID).async_stop_cover(), timeout=5,
+        )
+        flow_id = await _start_assisted(hass, entry)
+        await _record_anchor(
+            hass, flow_id, controller, coordinator, percent=50, raw=36000, mode="automatic",
+        )
+    store = hass.data[DOMAIN][entry.entry_id][DATA_PREDICTIVE_STORAGE]
+    await store.async_save(
+        PredictiveStoreData(
+            version=PREDICTIVE_STORAGE_VERSION,
+            shades={
+                SHADE_ID: {
+                    "rls": {
+                        "theta0": 0.4, "theta1": 0.1, "cov_00": 12.0, "forgetting": 0.98,
+                    },
+                    "confidence": 0.3, "tau_resp": 0.12, "sample_count": 9, "rmse": 0.02,
+                    "last_updated": "fictional-private-timestamp",
+                    "unrecognized": "fictional-stored-extra",
+                },
+            },
+        )
+    )
+    export = await async_get_config_entry_diagnostics(hass, entry)
+    second_export = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = json.dumps(export, allow_nan=False)
+    for private in (
+        '"shade-1"', '"lounge"', "Lounge", "Test shade", other_shade, "fictional-room",
+        "fictional-crestron.invalid", "fictional-private-token", "fictional-stored-extra",
+        "fictional-private-timestamp", "fictional-malformed-payload", entry.entry_id,
+    ):
+        assert private not in dumped
+
+    shade_alias, group_alias = next(iter(export["visual_groups"]["membership"].items()))
+    assert shade_alias not in second_export["visual_groups"]["membership"]
+    assert group_alias not in second_export["visual_groups"]["groups"]
+    assert export["shades"][shade_alias]["position"] == 36000
+    assert shade_alias in export["learning"]
+    assert export["stored_learning"][shade_alias] == {
+        "v0": 0.4, "v1": 0.1, "confidence": 0.3,
+        "tau_resp": 0.12, "sample_count": 9, "rmse": 0.02,
+    }
+    plan, = export["plan_events"]
+    assert plan["group_id"] == group_alias
+    assert plan["targets"][0]["shade_id"] == shade_alias
+    stop_batch, stage_batch = export["flush_events"]
+    assert stop_batch["groups"] == [{"group_id": group_alias, "shade_ids": [shade_alias]}]
+    assert stage_batch["targets"] == [
+        {"shade_id": shade_alias, "position": controller.writes[-1][0]["position"]},
+    ]
+    assisted_run, = export["assisted_calibration_runs"]
+    assert assisted_run["group_id"] == group_alias
+    assert assisted_run["saved"] == [shade_alias]
+    assert assisted_run["target_percent"] == 50
+    assert (
+        plan["seconds_from_export"] <= stop_batch["seconds_from_export"]
+        <= stage_batch["seconds_from_export"] <= assisted_run["seconds_from_export"] <= 0
+    )
+
+    log_alias = next(record.batch["ids"][0] for record in caplog.records if hasattr(record, "batch"))
+    assert f"Shade {log_alias} applying calibration" in caplog.text
+    assert f"saved=['{log_alias}']" in caplog.text
+    assert "fictional-malformed-payload" not in caplog.text
+    assert not re.search(r"\bshade-1\b|\blounge\b", caplog.text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("title", "updated"),
+    [
+        ("Crestron Home (fictional-crestron.invalid)", "Crestron Home"),
+        ("My Crestron shades", "My Crestron shades"),
+    ],
+)
+async def test_migration_changes_only_generated_entry_titles(hass, calibration, title, updated):
+    entry, _, _ = calibration
+    hass.config_entries.async_update_entry(
+        entry, title=title, data={CONF_HOST: "fictional-crestron.invalid"},
+    )
+    assert await async_migrate_entry(hass, entry)
+    assert entry.title == updated
+    assert entry.minor_version == 2
+    assert entry.data[CONF_HOST] == "fictional-crestron.invalid"
 
 
 @pytest.mark.asyncio

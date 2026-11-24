@@ -269,16 +269,12 @@ def parse_calibration_options(options: Mapping[str, Any]) -> CalibrationCollecti
     for raw_shade_id, raw_data in raw_calibration.items():
         shade_id = str(raw_shade_id)
         if not isinstance(raw_data, Mapping):
-            _LOGGER.warning(
-                "Calibration entry for shade %s is invalid; expected mapping", shade_id
-            )
+            _LOGGER.warning("Ignoring a calibration entry because it is not a mapping")
             continue
         try:
             per_shade[shade_id] = _parse_shade_calibration(raw_data)
-        except InvalidCalibrationError as err:
-            _LOGGER.warning(
-                "Calibration entry for shade %s is invalid: %s", shade_id, err
-            )
+        except InvalidCalibrationError:
+            _LOGGER.warning("Ignoring an invalid shade calibration entry")
 
     return CalibrationCollection(global_invert, per_shade, minimums)
 

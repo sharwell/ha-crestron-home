@@ -102,7 +102,7 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         )
         _LOGGER.debug(
             "Shade %s applying calibration with %d anchors (invert=%s)",
-            shade_id,
+            coordinator.log_aliases.shade(shade_id),
             len(self._shade_calibration.anchors),
             self._invert_axis,
         )
@@ -247,7 +247,10 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
                 if group_plan.plan.flush:
                     await self._write_batcher.async_flush()
             if not any_commands:
-                _LOGGER.debug("Shade %s predictive stop produced no targets", self._shade_id)
+                _LOGGER.debug(
+                    "Shade %s predictive stop produced no targets",
+                    self.coordinator.log_aliases.shade(self._shade_id),
+                )
                 return
             self.coordinator.burst()
             await self._predictive_store.async_save(
@@ -261,7 +264,7 @@ class CrestronHomeShade(CoordinatorEntity[ShadesCoordinator], CoverEntity):
         if (raw := self._resolve_current_raw_position()) is None:
             _LOGGER.debug(
                 "Shade %s stop request skipped because position is unknown",
-                self._shade_id,
+                self.coordinator.log_aliases.shade(self._shade_id),
             )
             return
 
