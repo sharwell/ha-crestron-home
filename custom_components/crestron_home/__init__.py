@@ -12,12 +12,14 @@ from .api import ApiClient
 from .calibration import CalibrationCollection, parse_calibration_options
 from .const import (
     CONF_API_TOKEN,
+    CONFIG_ENTRY_MINOR_VERSION,
     DATA_API_CLIENT,
     DATA_CALIBRATIONS,
     DATA_PREDICTIVE_MANAGER,
     DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
+    DEFAULT_ENTRY_TITLE,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
     OPT_PREDICTIVE_STOP,
@@ -44,6 +46,21 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.COVER]
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Remove the host from the old generated title while migrating version 1 entries."""
+    if entry.version != 1:
+        return False
+    if entry.minor_version < CONFIG_ENTRY_MINOR_VERSION:
+        host = entry.data.get(CONF_HOST)
+        title = entry.title
+        if isinstance(host, str) and title == f"{DEFAULT_ENTRY_TITLE} ({host})":
+            title = DEFAULT_ENTRY_TITLE
+        hass.config_entries.async_update_entry(
+            entry, title=title, minor_version=CONFIG_ENTRY_MINOR_VERSION
+        )
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Crestron Home from a config entry."""
 
@@ -53,7 +70,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api_token = entry.data[CONF_API_TOKEN]
     verify_ssl = entry.data.get(CONF_VERIFY_SSL, DEFAULT_VERIFY_SSL)
 
-    _LOGGER.debug("Creating API client for %s", host)
     client = ApiClient(hass, host, api_token, verify_ssl=verify_ssl)
 
     predictive_store = PredictiveStopStore(
@@ -106,6 +122,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         get_calibrations=_write_calibrations,
         on_success=lambda: coordinator.bump_fast_poll(),
         on_flush=coordinator.handle_write_flush,
+        log_aliases=coordinator.log_aliases,
     )
 
     hass.data[DOMAIN][entry.entry_id] = {
@@ -127,7 +144,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a Crestron Home config entry."""
 
-    _LOGGER.debug("Unload requested for config entry %s", entry.entry_id)
+    _LOGGER.debug("Unloading Crestron Home entry")
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:

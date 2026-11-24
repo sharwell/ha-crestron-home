@@ -26,6 +26,7 @@ from .const import (
     SHADE_POSITION_MAX,
 )
 from .predictive_stop import PlanResult, PredictiveRuntime
+from .privacy import IdentifierAliases
 from .assisted_calibration import AssistedCalibrationRun
 from .visual_groups import VisualGroupsConfig, log_invalid_groups
 
@@ -119,7 +120,11 @@ class StopPlanGroup:
 
 
 class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
-    """Coordinate shade state updates from the Crestron Home controller."""
+    """Coordinate shade state updates from the Crestron Home controller.
+
+    Use log_aliases for shade and group references across this loaded entry's
+    log messages. Each new coordinator starts a new set of aliases.
+    """
 
     def __init__(
         self,
@@ -147,6 +152,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         self._predictive = predictive
         self._calibrations = calibrations
         self._visual_groups = visual_groups
+        self.log_aliases = IdentifierAliases()
         self._plan_history: deque[dict[str, Any]] = deque(maxlen=20)
         self._flush_history: deque[dict[str, Any]] = deque(maxlen=20)
         self._assisted_history: deque[AssistedCalibrationRun] = deque(maxlen=10)
@@ -193,7 +199,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         try:
             payload = await self._client.async_get_shades()
         except (CannotConnectError, CrestronHomeApiError) as err:
-            raise UpdateFailed(str(err)) from err
+            raise UpdateFailed(str(err)) from None
 
         now = utcnow()
         shades: dict[str, Shade] = {}
@@ -206,12 +212,12 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         monotonic_now = time.monotonic()
         for item in payload:
             if not isinstance(item, dict):
-                _LOGGER.debug("Skipping shade entry because it is not a dict: %s", item)
+                _LOGGER.debug("Skipping shade entry because it is not an object")
                 continue
 
             raw_id = item.get("id")
             if raw_id is None:
-                _LOGGER.debug("Skipping shade entry without an id: %s", item)
+                _LOGGER.debug("Skipping shade entry without an ID")
                 continue
 
             shade_id = str(raw_id)
@@ -309,7 +315,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
         now = time.monotonic()
         partitions, invalid = self._visual_groups.partition_shades(list(shade_ids))
         if invalid:
-            log_invalid_groups(invalid)
+            log_invalid_groups(invalid, self.log_aliases)
 
         groups: list[StopPlanGroup] = []
         for group_id, members in partitions.items():
@@ -327,7 +333,7 @@ class ShadesCoordinator(DataUpdateCoordinator[dict[str, Shade]]):
             [shade_id for shade_id in shade_ids if shade_id]
         )
         if invalid:
-            log_invalid_groups(invalid)
+            log_invalid_groups(invalid, self.log_aliases)
 
         entry = {
             "timestamp": utcnow().isoformat(),

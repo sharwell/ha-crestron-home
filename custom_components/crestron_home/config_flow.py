@@ -39,6 +39,7 @@ from .const import (
     CAL_ANCHOR_PC_MIN,
     CAL_ANCHOR_RAW_MAX,
     CAL_ANCHOR_RAW_MIN,
+    CONFIG_ENTRY_MINOR_VERSION,
     CONFIG_FLOW_TIMEOUT,
     CONF_API_TOKEN,
     CONF_INVERT,
@@ -46,6 +47,7 @@ from .const import (
     DATA_PREDICTIVE_STORAGE,
     DATA_SHADES_COORDINATOR,
     DATA_WRITE_BATCHER,
+    DEFAULT_ENTRY_TITLE,
     DEFAULT_INVERT,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
@@ -82,6 +84,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Crestron Home."""
 
     VERSION = 1
+    MINOR_VERSION = CONFIG_ENTRY_MINOR_VERSION
 
     def __init__(self) -> None:
         self._user_input: dict[str, Any] | None = None
@@ -121,40 +124,25 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 verify_ssl=submitted[CONF_VERIFY_SSL],
             )
 
-            request_details = {
-                "host": host,
-                "verify_ssl": submitted[CONF_VERIFY_SSL],
-            }
-            log_level = logging.DEBUG
-            response_details: Any | Exception | None = None
-
             try:
                 async with asyncio.timeout(CONFIG_FLOW_TIMEOUT):
                     rooms = await client.async_get_rooms()
-            except asyncio.TimeoutError as err:
-                log_level = logging.WARNING
-                response_details = err
+            except asyncio.TimeoutError:
                 errors["base"] = "cannot_connect"
-            except InvalidAuthError as err:
-                log_level = logging.WARNING
-                response_details = err
+            except InvalidAuthError:
                 errors["base"] = "invalid_auth"
-            except CannotConnectError as err:
-                log_level = logging.WARNING
-                response_details = err
+            except CannotConnectError:
                 errors["base"] = "cannot_connect"
-            except CrestronHomeApiError as err:
-                log_level = logging.WARNING
-                response_details = err
+            except CrestronHomeApiError:
                 errors["base"] = "unknown"
             else:
-                response_details = rooms
                 self._rooms_count = len(rooms)
+                _LOGGER.debug("Connection test succeeded with rooms=%d", self._rooms_count)
                 self._user_input = submitted
                 return await self.async_step_confirm()
             finally:
-                _LOGGER.log(log_level, "Connection test request: %s", request_details)
-                _LOGGER.log(log_level, "Connection test response: %s", response_details)
+                if errors:
+                    _LOGGER.warning("Connection test failed: %s", errors["base"])
                 await client.async_logout()
 
         defaults = submitted or user_input or {}
@@ -191,7 +179,7 @@ class CrestronHomeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         return self.async_create_entry(
-            title=f"Crestron Home ({host})",
+            title=DEFAULT_ENTRY_TITLE,
             data={
                 CONF_HOST: host,
                 CONF_API_TOKEN: self._user_input[CONF_API_TOKEN],
@@ -1070,9 +1058,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                     self._load_working_calibration(shade_id)
                     return await self.async_step_edit_shade()
             except Exception:  # pragma: no cover - defensive logging
-                _LOGGER.exception(
-                    "Unexpected error while handling shade selection: %s", user_input
-                )
+                _LOGGER.error("Unexpected error while handling shade selection")
                 if "base" not in errors:
                     errors["base"] = "unknown"
 
@@ -1346,13 +1332,11 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
         self._assisted_last_run = run
         coordinator.record_assisted_calibration(run)
         _LOGGER.debug(
-            "Assisted calibration run",
-            extra={
-                "group": self._assisted_group_id,
-                "target_percent": target,
-                "saved": saved,
-                "skipped": skipped,
-            },
+            "Assisted calibration group=%s target_percent=%d saved=%s skipped=%s",
+            coordinator.log_aliases.group(run.group_id),
+            target,
+            [coordinator.log_aliases.shade(shade_id) for shade_id in saved],
+            [coordinator.log_aliases.shade(shade_id) for shade_id in skipped],
         )
 
         return saved, skipped
@@ -1485,13 +1469,7 @@ class CrestronHomeOptionsFlowHandler(config_entries.OptionsFlow):
                         self._working_invert_override = None
                         return await self.async_step_select_shade()
             except Exception:  # pragma: no cover - defensive logging
-                _LOGGER.exception(
-                    "Unexpected error while handling shade calibration: %s",
-                    {
-                        "shade_id": self._selected_shade_id,
-                        "user_input": user_input,
-                    },
-                )
+                _LOGGER.error("Unexpected error while handling shade calibration")
                 if "base" not in errors:
                     errors["base"] = "unknown"
 

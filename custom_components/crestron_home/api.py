@@ -131,24 +131,27 @@ class ApiClient:
                 HEADER_AUTH_TOKEN: self._api_token,
             }
 
-            _LOGGER.debug("Requesting auth key from %s", url)
+            _LOGGER.debug("Requesting controller authentication")
             try:
                 async with session.get(url, headers=headers, timeout=self._timeout) as response:
+                    _LOGGER.debug("Controller login returned HTTP %d", response.status)
                     if response.status in (HTTP_UNAUTHORIZED, HTTP_NETWORK_AUTH_REQUIRED):
                         raise InvalidAuthError("Invalid API token provided")
                     response.raise_for_status()
-                    data = await response.json()
-            except InvalidAuthError:
-                raise
+                    try:
+                        data = await response.json()
+                    except (ContentTypeError, ValueError):
+                        raise CrestronHomeApiError("Controller response was not JSON") from None
             except ClientResponseError as err:
-                raise CannotConnectError("Unexpected response from controller") from err
-            except (ClientError, asyncio.TimeoutError) as err:
-                raise CannotConnectError("Error communicating with controller") from err
-            except (ContentTypeError, ValueError) as err:
-                raise CrestronHomeApiError("Controller response was not JSON") from err
+                # The transport exception can contain URLs and controller-supplied text.
+                raise CannotConnectError(f"Unexpected controller HTTP status {err.status}") from None
+            except asyncio.TimeoutError:
+                raise CannotConnectError("Controller login timed out") from None
+            except ClientError:
+                raise CannotConnectError("Error communicating with controller") from None
 
-            auth_key = data.get("authkey")
-            if not auth_key:
+            auth_key = data.get("authkey") if isinstance(data, dict) else None
+            if not isinstance(auth_key, str) or not auth_key:
                 raise CrestronHomeApiError("Controller response did not include an auth key")
 
             self._auth_key = auth_key
@@ -167,8 +170,6 @@ class ApiClient:
             HEADER_AUTH_KEY: self._auth_key or "",
         }
 
-        _LOGGER.debug("Requesting %s %s", method, url)
-
         try:
             async with session.request(
                 method,
@@ -176,6 +177,7 @@ class ApiClient:
                 headers=headers,
                 timeout=self._timeout,
             ) as response:
+                _LOGGER.debug("Controller request returned HTTP %d", response.status)
                 if response.status in (HTTP_UNAUTHORIZED, HTTP_NETWORK_AUTH_REQUIRED):
                     if retry:
                         _LOGGER.debug("Auth key expired, retrying request after reauthentication")
@@ -185,18 +187,19 @@ class ApiClient:
 
                 response.raise_for_status()
 
-                if response.content_type == MIME_TYPE_JSON:
-                    data = await response.json()
-                else:
-                    data = await response.text()
-        except InvalidAuthError:
-            raise
+                try:
+                    if response.content_type == MIME_TYPE_JSON:
+                        data = await response.json()
+                    else:
+                        data = await response.text()
+                except (ContentTypeError, ValueError):
+                    raise CrestronHomeApiError("Invalid controller response content") from None
         except ClientResponseError as err:
-            raise CrestronHomeApiError("Unexpected response from controller") from err
-        except (ClientError, asyncio.TimeoutError) as err:
-            raise CannotConnectError("Error communicating with controller") from err
-        except (ContentTypeError, ValueError) as err:
-            raise CrestronHomeApiError("Controller response was not JSON") from err
+            raise CrestronHomeApiError(f"Unexpected controller HTTP status {err.status}") from None
+        except asyncio.TimeoutError:
+            raise CannotConnectError("Controller request timed out") from None
+        except ClientError:
+            raise CannotConnectError("Error communicating with controller") from None
 
         self._last_used = time.monotonic()
         return data
@@ -204,6 +207,7 @@ class ApiClient:
     async def async_get_rooms(self) -> list[Any]:
         """Return the list of rooms from the controller."""
 
+        _LOGGER.debug("Requesting controller rooms")
         data = await self.async_request("GET", PATH_ROOMS)
 
         if isinstance(data, list):
@@ -220,6 +224,7 @@ class ApiClient:
     async def async_get_shades(self) -> list[Any]:
         """Return the list of shades from the controller."""
 
+        _LOGGER.debug("Requesting controller shades")
         data = await self.async_request("GET", PATH_SHADES)
 
         if isinstance(data, list):
@@ -235,6 +240,7 @@ class ApiClient:
     async def async_get_shade(self, shade_id: str | int) -> dict[str, Any]:
         """Return details for a specific shade."""
 
+        _LOGGER.debug("Requesting controller shade details")
         data = await self.async_request("GET", f"{PATH_SHADES}/{shade_id}")
 
         if isinstance(data, dict):
@@ -261,8 +267,8 @@ class ApiClient:
         Authentication failures raise InvalidAuthError. Connection errors and
         timeouts raise CannotConnectError. An aggregate "failure" raises
         ShadeCommandFailedError. An unexpected HTTP status, non-JSON content
-        type, or response without a usable aggregate status raises
-        CrestronHomeApiError. A JSON decoding error can also propagate.
+        type, invalid JSON, or response without a usable aggregate status raises
+        CrestronHomeApiError. Error messages omit the controller response text.
 
         Partial results are returned for the caller to inspect. Use a later
         position reading to confirm physical movement.
@@ -285,7 +291,7 @@ class ApiClient:
 
         if validate_before_send is not None:
             validate_before_send()
-        _LOGGER.debug("POST %s payload=%s", PATH_SHADES_SET_STATE, payload)
+        _LOGGER.debug("Submitting controller SetState with %d targets", len(items))
 
         try:
             async with session.post(
@@ -294,6 +300,7 @@ class ApiClient:
                 json=payload,
                 timeout=self._timeout,
             ) as response:
+                _LOGGER.debug("Controller SetState returned HTTP %d", response.status)
                 if response.status in (HTTP_UNAUTHORIZED, HTTP_NETWORK_AUTH_REQUIRED):
                     if retry:
                         _LOGGER.debug(
@@ -309,16 +316,14 @@ class ApiClient:
 
                 try:
                     data = await response.json()
-                except ContentTypeError as err:
-                    raise CrestronHomeApiError(
-                        "Controller response was not JSON"
-                    ) from err
-        except InvalidAuthError:
-            raise
+                except (ContentTypeError, ValueError):
+                    raise CrestronHomeApiError("Controller response was not JSON") from None
         except ClientResponseError as err:
-            raise CrestronHomeApiError("Unexpected response from controller") from err
-        except (ClientError, asyncio.TimeoutError) as err:
-            raise CannotConnectError("Error communicating with controller") from err
+            raise CrestronHomeApiError(f"Unexpected controller HTTP status {err.status}") from None
+        except asyncio.TimeoutError:
+            raise CannotConnectError("Controller SetState timed out") from None
+        except ClientError:
+            raise CannotConnectError("Error communicating with controller") from None
 
         parsed = self._parse_set_state_response(data)
         if parsed.status == "failure":

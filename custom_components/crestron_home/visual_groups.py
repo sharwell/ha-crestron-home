@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import logging
 from typing import Iterable, Mapping, MutableMapping, Sequence
 
+from .privacy import IdentifierAliases
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -161,8 +163,10 @@ def update_visual_groups_option(
         options.pop(OPT_VISUAL_GROUPS)
 
 
-def log_invalid_groups(invalid: Iterable[str]) -> None:
+def log_invalid_groups(invalid: Iterable[str], aliases: IdentifierAliases) -> None:
+    """Warn about undefined group references using the current entry's aliases."""
     for group_id in sorted(invalid):
         _LOGGER.warning(
-            "Visual group '%s' referenced in membership but not defined", group_id
+            "Visual group %s referenced in membership but not defined",
+            aliases.group(group_id),
         )

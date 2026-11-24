@@ -100,19 +100,27 @@ The [Options flow diagram](docs/OPTIONS_FLOW.md) shows the workflow branches.
 
 ## Troubleshooting
 
-On the **Crestron Home** integration page, choose **Enable debug logging** from the
-menu, reproduce the behavior, then disable debug logging to download the log.
+On the **Crestron Home** integration page, choose **Enable debug logging** and
+reproduce the behavior. In Home Assistant 2026.11 or later, select **Show logs**
+and then **Download** to save the integration's live log.
+**Disable debug logging** can download the full Home Assistant log, which may
+include messages from other integrations.
+
 To check batching, run a scene that sends several shade commands together and
-look for the `POST /cws/api/shades/SetState` summary. Its `items` count and
-`status` show how many targets were sent and how the controller responded.
-Check the shade positions separately to confirm movement.
+look for the `POST /cws/api/shades/SetState` summary. Its
+`items` count and `status` describe the batch and the controller's response.
+Check the shade positions separately to confirm movement. Shade and group
+aliases let you follow related messages from the same integration run.
+Review the relevant log excerpt and remove any private details before sharing.
 [Home Assistant debug logging instructions](https://www.home-assistant.io/docs/configuration/troubleshooting/#debug-logs-and-diagnostics)
 
 Use **Download diagnostics** from the integration entry's menu to inspect learned
 parameters, visual groups, recent stop plans and command batches, and assisted
-calibration history. Before sharing diagnostics or logs, redact credentials,
-controller addresses, private shade, room, and group names and IDs, and raw
-request or response payloads. Check the whole file, including nested entries.
+calibration history. The Crestron section uses fresh shade and group aliases
+for each download and reports event times in seconds relative to the download.
+When reporting an issue, copy the top-level `data` section into the report or
+into a new file with a generic filename. Home Assistant adds its own metadata
+around that section and can include the config entry ID in the original filename.
 
 ## Development setup
 

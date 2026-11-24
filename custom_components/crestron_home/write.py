@@ -23,6 +23,7 @@ from .const import (
     LOG_KEY_BATCH,
     PATH_SHADES_SET_STATE,
 )
+from .privacy import IdentifierAliases, write_status_label
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class ShadeWriteBatcher:
     When supplied, get_calibrations provides the current per-shade limits at
     dispatch time. Cancel an unsent submission if its targets became invalid
     during authentication. Flush callbacks receive the prepared payload.
+    Supply the loaded entry's log_aliases to correlate shade references across
+    its log messages. A standalone batcher uses its own aliases.
     """
 
     def __init__(
@@ -58,6 +61,7 @@ class ShadeWriteBatcher:
         get_calibrations: Callable[[], CalibrationCollection] | None = None,
         on_success: Callable[[], None] | None = None,
         on_flush: Callable[[Sequence[dict[str, int]], str | None], None] | None = None,
+        log_aliases: IdentifierAliases | None = None,
     ) -> None:
         self._hass = hass
         self._client = client
@@ -71,6 +75,7 @@ class ShadeWriteBatcher:
         self._closed = False
         self._on_success = on_success
         self._on_flush = on_flush
+        self._log_aliases = log_aliases if log_aliases is not None else IdentifierAliases()
 
     async def enqueue(
         self, shade_id: str, position: int, *, require_exact: bool = False,
@@ -216,41 +221,43 @@ class ShadeWriteBatcher:
             status = "error"
             self._reject_all(waiters, err)
             raise
-        except InvalidCalibrationError as err:
+        except InvalidCalibrationError:
             status = "error"
             error = HomeAssistantError(self._translate("error_minimum_position_unreachable"))
             self._reject_all(waiters, error)
-            raise error from err
-        except CrestronHomeApiError as err:
+            raise error from None
+        except CrestronHomeApiError:
             status = "error"
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
-            raise error from err
-        except Exception as err:  # pragma: no cover - defensive safeguard
+            raise error from None
+        except Exception:  # pragma: no cover - defensive safeguard
             status = "error"
             error = HomeAssistantError(self._translate("error_write_failed"))
             self._reject_all(waiters, error)
-            raise error from err
+            raise error from None
         finally:
             if self._on_flush is not None and payload_items:
                 try:
                     self._on_flush(payload_items, status)
                 except Exception:  # pragma: no cover - defensive safeguard
-                    _LOGGER.exception("Unhandled exception from flush callback")
+                    _LOGGER.error("Unhandled exception from flush callback")
 
         ids = list(targets)
         status = response.status
+        shade_aliases = [self._log_aliases.shade(shade_id) for shade_id in ids]
+        status_label = write_status_label(status)
         _LOGGER.debug(
-            "POST %s items=%s ids=%s status=%s",
+            "POST %s items=%s shades=%s status=%s",
             PATH_SHADES_SET_STATE,
             len(payload_items),
-            ids,
-            status,
+            shade_aliases,
+            status_label,
             extra={
                 LOG_KEY_BATCH: {
                     "count": len(payload_items),
-                    "ids": ids,
-                    "status": status,
+                    "ids": shade_aliases,
+                    "status": status_label,
                 }
             },
         )
@@ -259,23 +266,28 @@ class ShadeWriteBatcher:
             try:
                 self._on_success()
             except Exception:  # pragma: no cover - defensive safeguard
-                _LOGGER.exception("Unhandled exception from success callback")
+                _LOGGER.error("Unhandled exception from success callback")
 
         default_status = "success" if status in {"success", "partial"} else status
 
-        failed: dict[str, ShadeCommandResult] = {}
+        failed: dict[str, str] = {}
         for shade_id in ids:
             result = response.results.get(shade_id)
             if result is None:
                 result = ShadeCommandResult(status=default_status)
 
             if result.status != "success":
-                failed[shade_id] = result
+                alias = self._log_aliases.shade(shade_id)
+                # Recognize a known reason without propagating protocol text.
+                reason = write_status_label(result.status)
+                if result.message and result.message.strip().lower() == "offline":
+                    reason = "offline"
+                failed[alias] = reason
                 error = HomeAssistantError(
                     self._translate(
                         "error_partial_write",
-                        shade_id=shade_id,
-                        reason=result.message or result.status,
+                        shade_id=alias,
+                        reason=reason,
                     )
                 )
                 self._reject_waiters(waiters[shade_id], error)
@@ -285,7 +297,7 @@ class ShadeWriteBatcher:
                         waiter.future.set_result(None)
 
         if failed:
-            self._log_partial_failure(failed)
+            _LOGGER.warning("Partial shade write failure: %s", failed)
         else:
             self._resolve_remaining(waiters)
 
@@ -304,16 +316,6 @@ class ShadeWriteBatcher:
             for waiter in shade_waiters:
                 if not waiter.future.done():
                     waiter.future.set_result(None)
-
-    def _log_partial_failure(self, failed: dict[str, ShadeCommandResult]) -> None:
-        entries = [
-            "%s (%s)" % (shade_id, result.message or result.status)
-            for shade_id, result in failed.items()
-        ]
-        _LOGGER.warning(
-            "Partial shade write failure for ids: %s",
-            ", ".join(entries),
-        )
 
     async def async_shutdown(self) -> None:
         """Cancel scheduled flushes and process remaining items."""
